@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment & secrets
+# .env* with an allowlist for the committed template, so a new real env file
+# (.env.prod, .env.staging, ...) is ignored by default rather than by memory.
+.env*
+!.env.example
+!/.gitignore
+
+# Data directory (auth tokens, session storage)
+data/
+storage.json
+*.db
+
+# Logs (raw-op capture, etc.)
+/logs/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

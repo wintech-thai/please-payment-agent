@@ -1,0 +1,40 @@
+# Standalone worker — one LINE account = one container.
+# Connects to an external Central API over HTTP (set API_BASE_URL in .env).
+# For multiple accounts, run one copy per account with a distinct INSTANCE_ID
+# and a unique PROXY_URL (never share a host IP — see README anti-ban notes).
+services:
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rlbotline-worker
+    restart: unless-stopped
+
+    # Resource limits per spec: 256MB RAM, 0.2 CPU
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.2"
+        reservations:
+          memory: 64M
+          cpus: "0.05"
+
+    # Worker is stateless on disk; the only mount is the dev raw-op log sink.
+    volumes:
+      - ./logs:/app/logs
+
+    # The entrypoint rotates INSTANCE_TOKEN when WORKER_BOOTSTRAP_SECRET is set,
+    # otherwise it just launches the worker with the INSTANCE_TOKEN from .env.
+    entrypoint: ["sh", "/app/scripts/worker-entrypoint.sh"]
+    env_file:
+      - .env
+    environment:
+      - RAW_OP_LOG=${RAW_OP_LOG:-0}
+      - RAW_OP_LOG_DIR=/app/logs
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

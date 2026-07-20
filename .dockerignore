@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment & secrets
+.env
+*.env.local
+
+# Data directory (auth tokens, SQLite DB)
+data/
+
+# IDE
+.vscode/
+.idea/
+.gemini/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# GitHub config (not needed in container)
+.github/
+
+# Scripts & tests (not needed in production)
+scripts/
+!scripts/worker-entrypoint.sh
+
+# Docker files
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# Docs
+*.md
+LICENSE
