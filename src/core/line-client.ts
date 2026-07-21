@@ -14,6 +14,7 @@ import type { Client } from "@evex/linejs";
 import { BaseStorage, type Storage } from "@evex/linejs/storage";
 import { logger } from "./logger.js";
 import { reportPincode, reportQr, reportReady, reportStatus } from "./webhook.js";
+import { setLoginStatus } from "./login-state.js";
 import { stateRequest } from "./state-client.js";
 import { initSharedLimiter, gateOutbound } from "./rate-limiter.js";
 import { isGroupCommandEnabled, isFleetMember, reportOwnProfileMid } from "./database.js";
@@ -459,6 +460,7 @@ async function attemptLoginWithRetry(
           requestedAt: loginResult.requestedAt,
           timeoutMs: loginResult.timeoutMs,
         });
+        setLoginStatus({ state: "error", error: PIN_TIMEOUT_MESSAGE });
         return loginResult;
       }
 
@@ -489,6 +491,7 @@ async function attemptLoginWithRetry(
           error: msg,
         });
         await reportStatus("error", msg, { reason: "login_failed" });
+        setLoginStatus({ state: "error", error: msg });
         return { kind: "login-failed", message: msg, attempts: attempt };
       }
 
@@ -509,6 +512,7 @@ async function attemptLoginWithRetry(
     error: lastMessage,
   });
   await reportStatus("error", lastMessage, { reason: "login_failed" });
+  setLoginStatus({ state: "error", error: lastMessage });
   return { kind: "login-failed", message: lastMessage, attempts: MAX_LOGIN_ATTEMPTS };
 }
 
@@ -536,6 +540,7 @@ function buildQrAttempt(
               // Log the URL too so a standalone worker can be logged in by
               // scanning it straight from the container logs.
               logger.info("QR login URL received — scan to log in", { url });
+              setLoginStatus({ state: "qr_pending", qrUrl: url });
               reportQr(url).catch((err) => {
                 logger.error("Failed to report QR URL", {
                   error: err instanceof Error ? err.message : String(err),
@@ -544,6 +549,7 @@ function buildQrAttempt(
             },
             onPincodeRequest(pincode: string) {
               logger.info("QR PIN code received", { pincode });
+              setLoginStatus({ state: "pin_pending", pincode });
               reportPincode(pincode).catch((err) => {
                 logger.error("Failed to report PIN code", {
                   error: err instanceof Error ? err.message : String(err),
@@ -586,6 +592,7 @@ function buildPasswordAttempt(
             onPincodeRequest(pincode: string) {
               pinRequestedAt = Date.now();
               logger.info("PIN code received", { pincode });
+              setLoginStatus({ state: "pin_pending", pincode });
               reportPincode(pincode).catch((err) => {
                 logger.error("Failed to report PIN code", {
                   error: err instanceof Error ? err.message : String(err),
@@ -633,6 +640,7 @@ export async function startQrLogin(config: WorkerConfig): Promise<LineClientInit
     return { kind: "login-failed", message: "login already in progress", attempts: 0 };
   }
   loginInFlight = true;
+  setLoginStatus({ state: "starting", qrUrl: undefined, pincode: undefined, error: undefined });
   try {
     const opts = ensureLoginDeviceOptions(config);
     return await attemptLoginWithRetry(buildQrAttempt(opts, config.pinWaitTimeoutMs), "QR", false);
@@ -654,6 +662,7 @@ export async function startPasswordLogin(
     return { kind: "login-failed", message: "login already in progress", attempts: 0 };
   }
   loginInFlight = true;
+  setLoginStatus({ state: "starting", qrUrl: undefined, pincode: undefined, error: undefined });
   try {
     const opts = ensureLoginDeviceOptions(config);
     return await attemptLoginWithRetry(
@@ -728,6 +737,15 @@ export async function initLineClient(config: WorkerConfig): Promise<LineClientIn
   // running standalone. Email/password is only used when explicitly provided
   // via the persisted session or the LINE_EMAIL/LINE_PASSWORD env vars.
   if (!fallbackLineEmail || !fallbackLinePassword) {
+    // Standalone app with the inbound HTTP API: don't auto-start QR at boot —
+    // let the caller pick QR or email/password via POST /login/*. The bootstrap
+    // waits on `waitForLoginReady()` until one of those succeeds.
+    if (config.httpApiEnabled) {
+      logger.info("No token/credentials — awaiting login via the HTTP API");
+      setLoginStatus({ state: "idle", qrUrl: undefined, pincode: undefined, error: undefined });
+      return { kind: "onboarding-required" };
+    }
+
     logger.info("No token or email/password; starting QR login");
     return attemptLoginWithRetry(
       buildQrAttempt(deviceOptions, config.pinWaitTimeoutMs),
@@ -793,6 +811,14 @@ async function onClientReady(lineClient: Client): Promise<void> {
     botMid = mid === "Unknown" ? "" : mid;
 
     logger.info("LINE client authenticated successfully", { displayName, mid });
+    setLoginStatus({
+      state: "ready",
+      profileName: displayName,
+      profileMid: mid,
+      qrUrl: undefined,
+      pincode: undefined,
+      error: undefined,
+    });
     await reportReady(displayName, mid);
 
     // Enrol in the fleet roster so siblings recognise this bot and never kick it.
@@ -805,6 +831,14 @@ async function onClientReady(lineClient: Client): Promise<void> {
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     logger.warn("Failed to fetch profile after login", { error: msg });
+    setLoginStatus({
+      state: "ready",
+      profileName: "Unknown",
+      profileMid: "Unknown",
+      qrUrl: undefined,
+      pincode: undefined,
+      error: undefined,
+    });
     await reportReady("Unknown", "Unknown");
   }
 }

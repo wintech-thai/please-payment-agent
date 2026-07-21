@@ -796,6 +796,70 @@ describe("🏦 onix-client — notifyLineMessage()", () => {
   });
 });
 
+// ─── HTTP API (http-server.ts) ───────────────────────────────────
+import { startHttpServer, stopHttpServer } from "../src/core/http-server.js";
+import { setLoginStatus } from "../src/core/login-state.js";
+
+describe("🌐 HTTP API — http-server.ts", () => {
+  let port = 0;
+  const auth = `Basic ${Buffer.from("api:secret").toString("base64")}`;
+  const cfg = {
+    instanceId: "test-http",
+    httpApiEnabled: true,
+    httpPort: 0, // 0 → Bun picks a free port; startHttpServer returns it
+    httpApiUser: "api",
+    httpApiKey: "secret",
+  } as unknown as import("../src/types.js").WorkerConfig;
+
+  beforeAll(() => {
+    port = startHttpServer(cfg) ?? 0;
+  });
+  afterAll(() => {
+    stopHttpServer();
+  });
+
+  test("GET /health is open (no auth) and reports login state", async () => {
+    const res = await fetch(`http://localhost:${port}/health`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.instanceId).toBe("test-http");
+    expect(typeof body.login).toBe("string");
+  });
+
+  test("GET /login/status requires Basic auth", async () => {
+    const res = await fetch(`http://localhost:${port}/login/status`);
+    expect(res.status).toBe(401);
+  });
+
+  test("GET /login/status returns the current login status with auth", async () => {
+    setLoginStatus({ state: "qr_pending", qrUrl: "https://line.me/R/xxx" });
+    const res = await fetch(`http://localhost:${port}/login/status`, {
+      headers: { authorization: auth },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.state).toBe("qr_pending");
+    expect(body.qrUrl).toBe("https://line.me/R/xxx");
+  });
+
+  test("POST /login/password rejects a missing field with 400 (before starting login)", async () => {
+    const res = await fetch(`http://localhost:${port}/login/password`, {
+      method: "POST",
+      headers: { authorization: auth, "content-type": "application/json" },
+      body: JSON.stringify({ email: "only-email" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  test("unknown path returns 404", async () => {
+    const res = await fetch(`http://localhost:${port}/nope`, {
+      headers: { authorization: auth },
+    });
+    expect(res.status).toBe(404);
+  });
+});
+
 // ─── Intercept raw-payload redaction ─────────────────────────────
 import { redactRaw } from "../src/features/intercept.js";
 

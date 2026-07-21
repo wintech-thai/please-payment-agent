@@ -57,9 +57,13 @@ bun run dev               # or: bun run start
 
 ### Docker
 
+Runs as a **standalone app container** — maps **port 3000** (the inbound HTTP API) and sets
+**no resource limits** (it runs on its own, not as a fleet-managed worker).
+
 ```bash
 docker compose up --build -d
-docker compose logs -f worker   # watch here for the QR URL / PIN on first login
+docker compose logs -f worker   # watch here for login / status
+curl http://localhost:3000/health
 ```
 
 ## Configuration
@@ -79,8 +83,25 @@ for the full list. Key ones:
 | `ONIX_API_USER` / `ONIX_API_KEY` | Basic auth for onix (default user `api`; key is the password) |
 | `ONIX_ORG` / `ONIX_APPLICATION_TYPE` | onix path org segment (`global`) / `Onix-Application-Type` header (`backend`) |
 | `BANK_OA_HANDLES` | LINE @handles to follow + watch (default: the 3 bank OAs) |
+| `HTTP_PORT` | Inbound HTTP API port — login + health (default `3000`; `0` disables) |
+| `HTTP_API_USER` / `HTTP_API_KEY` | Basic auth for `/login/*` (default user `api`; unset key = unauthenticated) |
 | `PROXY_URL` | Per-instance proxy (anti-ban) |
 | `PIN_WAIT_TIMEOUT_MS` | How long to wait for the 2FA PIN before parking |
+
+### HTTP API (standalone login)
+
+The container exposes an HTTP server on `HTTP_PORT` (default 3000) so a caller can drive login
+directly — no central controller needed:
+
+```bash
+curl -u api:$HTTP_API_KEY -X POST http://localhost:3000/login/qr        # → { qrUrl }
+curl -u api:$HTTP_API_KEY http://localhost:3000/login/status            # poll for pincode / ready
+curl -u api:$HTTP_API_KEY -X POST http://localhost:3000/login/password \
+  -H 'Content-Type: application/json' -d '{"email":"...","password":"..."}'
+```
+
+With `HTTP_PORT` enabled and no token/credentials, the worker waits for one of these calls instead
+of auto-starting QR at boot. Full flow: [.docs/login.md](.docs/login.md).
 
 ### Forwarding to onix
 
@@ -109,7 +130,7 @@ bun run verify      # typecheck + test
 ```
 .docs/        architecture, forwarding (bank OA → onix), login flow
 src/
-  core/       LINE client, event router, state client, sync, webhook, forwarder, onix-client, rate limiter, …
+  core/       LINE client, event router, state client, sync, webhook, forwarder, onix-client, http-server, login-state, rate limiter, …
   features/   anti-unsend, tagall, welcome/goodbye, sub-admin, anti-kick/link/spam, sync, watch, intercept, …
   index.ts    worker bootstrap + lifecycle + sync-hub RPC handlers (incl. login_qr/login_password)
   types.ts    shared types (WorkerConfig, OnixConfig, records, LINE op types)

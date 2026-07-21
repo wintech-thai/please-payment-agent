@@ -82,6 +82,9 @@ export function loadConfig(): WorkerConfig {
     .map((h) => h.trim())
     .filter((h) => h.length > 0);
 
+  // Inbound HTTP API (standalone app): login + health on this port. 0 disables.
+  const httpPort = optionalInt("HTTP_PORT", 3000);
+
   const config: WorkerConfig = {
     lineAuthToken: optionalTrimmedEnv("LINE_AUTH_TOKEN"),
     // Standalone login credentials sent directly to the worker via env. Used as
@@ -107,6 +110,10 @@ export function loadConfig(): WorkerConfig {
     pinWaitTimeoutMs: optionalInt("PIN_WAIT_TIMEOUT_MS", 300000),
     onix,
     bankOaHandles,
+    httpPort,
+    httpApiEnabled: httpPort > 0,
+    httpApiUser: optionalEnv("HTTP_API_USER", "api"),
+    httpApiKey: optionalTrimmedEnv("HTTP_API_KEY"),
     logLevel,
   };
 

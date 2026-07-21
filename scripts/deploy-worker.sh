@@ -24,6 +24,13 @@ Defaults:
 Required env for run/deploy:
   API_BASE_URL
   INSTANCE_TOKEN
+  INSTANCE_ID
+
+Optional (passed through when set): BOT_NAME, LINE_EMAIL, LINE_PASSWORD,
+  LINE_AUTH_TOKEN, PROXY_URL, HTTP_PORT (default 3000, published as
+  WORKER_HTTP_PORT:HTTP_PORT), HTTP_API_USER, HTTP_API_KEY, BANK_OA_HANDLES,
+  ONIX_API_URL, ONIX_ORG, ONIX_AGENT_ID, ONIX_API_USER, ONIX_API_KEY,
+  ONIX_APPLICATION_TYPE, ONIX_FORWARD_TIMEOUT_MS
 
 Examples:
   ./scripts/deploy-worker.sh build
@@ -45,21 +52,42 @@ build_image() {
 
 run_container() {
   require_command docker
-  require_env API_BASE_URL INSTANCE_TOKEN
+  require_env API_BASE_URL INSTANCE_TOKEN INSTANCE_ID
 
   local worker_image="${WORKER_IMAGE:-rlbotline-worker:latest}"
   local container_name="${WORKER_CONTAINER_NAME:-rlbotline-worker}"
   local data_volume="${WORKER_DATA_VOLUME:-rlbotline-worker-data}"
   local log_level="${LOG_LEVEL:-info}"
+  # Standalone app: publish the inbound HTTP API port (login + health).
+  local http_port="${HTTP_PORT:-3000}"
+  local host_http_port="${WORKER_HTTP_PORT:-$http_port}"
   local command=(
     docker run -d
     --name "$container_name"
     --restart unless-stopped
+    -p "${host_http_port}:${http_port}"
     -v "${data_volume}:/data"
     -e "API_BASE_URL=${API_BASE_URL}"
     -e "INSTANCE_TOKEN=${INSTANCE_TOKEN}"
+    -e "INSTANCE_ID=${INSTANCE_ID}"
     -e "LOG_LEVEL=${log_level}"
+    -e "HTTP_PORT=${http_port}"
   )
+
+  # Pass through optional vars (onix forwarding, bank OAs, HTTP auth, login
+  # creds, proxy) only when they're set in the environment.
+  local optional_vars=(
+    BOT_NAME LINE_EMAIL LINE_PASSWORD LINE_AUTH_TOKEN PROXY_URL
+    HTTP_API_USER HTTP_API_KEY BANK_OA_HANDLES
+    ONIX_API_URL ONIX_ORG ONIX_AGENT_ID ONIX_API_USER ONIX_API_KEY
+    ONIX_APPLICATION_TYPE ONIX_FORWARD_TIMEOUT_MS
+  )
+  local v
+  for v in "${optional_vars[@]}"; do
+    if [[ -n "${!v:-}" ]]; then
+      command+=( -e "${v}=${!v}" )
+    fi
+  done
 
   command+=( "$worker_image" )
 

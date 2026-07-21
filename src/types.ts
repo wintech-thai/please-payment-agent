@@ -302,6 +302,14 @@ export interface WorkerConfig {
   onix: OnixConfig;
   /** LINE @handles of bank OAs to follow + watch (e.g. ["@scbconnect", "@krungthaiconnext", "@kbanklive"]). */
   bankOaHandles: string[];
+  /** Inbound HTTP API port (login + health). 0 disables the server. */
+  httpPort: number;
+  /** True when httpPort > 0 — this standalone app exposes an inbound HTTP API. */
+  httpApiEnabled: boolean;
+  /** Basic auth user for the inbound HTTP API (default "api"). */
+  httpApiUser: string;
+  /** Basic auth key for the inbound HTTP API; when unset the API is unauthenticated. */
+  httpApiKey: string | undefined;
   logLevel: LogLevel;
 }
 

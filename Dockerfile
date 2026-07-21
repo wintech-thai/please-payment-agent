@@ -55,6 +55,9 @@ ENV MESSAGE_RETENTION_HOURS=24
 # Run as non-root user (security best practice)
 USER bun
 
+# Standalone app container listens on port 3000
+EXPOSE 3000
+
 # Health check: verify the bun process is alive
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD pgrep -f "bun" > /dev/null || exit 1

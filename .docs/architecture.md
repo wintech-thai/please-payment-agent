@@ -28,15 +28,18 @@ flowchart LR
 
   UA -->|"REST"| CW
   CW -->|"REST relay กลับ"| UA
+  UA -->|"HTTP :3000 (login/health)"| W
   CW <-->|"WebSocket /ws/sync<br/>(rpc_request / state_update)"| W
   W -->|"HTTP /state/* · /webhooks/*"| CW
   W <-->|"login · poll · ส่ง/รับข้อความ"| LINE
   W -->|"HTTP POST + Basic auth"| ONIX
 ```
 
-**หลักการสำคัญ:** worker เป็น **outbound-only** — ไม่มี HTTP server ขาเข้า มันเป็นฝ่าย *dial out* ไปหา
-central web เสมอ (ทั้ง REST และ WebSocket) ดังนั้นคำสั่งจาก central web ("ยิงมาสั่ง bot") จึงมาทาง
-**WebSocket RPC** บน socket ที่ worker เปิดค้างไว้ ไม่ใช่พอร์ตที่ worker เปิดรอ
+**หลักการสำคัญ:** worker คุยกับ LINE / onix / central web แบบ **outbound** เป็นหลัก (dial out ทั้ง REST
+และ WebSocket) — แต่ในโหมด **standalone app** จะเปิด **inbound HTTP API บน `HTTP_PORT` (default 3000)**
+เพิ่มด้วย ([../src/core/http-server.ts](../src/core/http-server.ts)) ให้ยิง login/health มาที่ bot ตรงๆ ได้
+ไม่ต้องมี central web มาคุม ส่วนคำสั่งจาก central web (ถ้ามี) ยังมาทาง **WebSocket RPC** บน socket ที่ worker
+เปิดค้างไว้เหมือนเดิม
 
 ## 3. ช่องทางสื่อสารระหว่าง worker กับ central web
 
@@ -51,6 +54,20 @@ central web เสมอ (ทั้ง REST และ WebSocket) ดังนั
 `discover_chats`, `reload_watched_chats`, `list_group_members`, `lookup_contact`, `kick_member`,
 `invite_members`, `add_friend`, `list_friends`, `sweep_blacklist`, `backup_group`, `recover_group`,
 `list_commands`, `execute_command`, และที่เพิ่มใหม่: **`login_qr`**, **`login_password`**, **`ensure_bank_oa`**
+
+### Inbound HTTP API (standalone, บน `HTTP_PORT`)
+
+นอกจากช่องทาง outbound ข้างบน worker ยังเปิด HTTP server ขาเข้าบน `HTTP_PORT` (default 3000) —
+[../src/core/http-server.ts](../src/core/http-server.ts):
+
+| Method + Path | Auth | ใช้ทำอะไร |
+|---|---|---|
+| `GET /health` | ไม่ต้อง | liveness + login state |
+| `GET /login/status` | Basic | สถานะ login เต็ม (qrUrl / pincode / profile) |
+| `POST /login/qr` | Basic | เริ่ม QR login |
+| `POST /login/password` | Basic | เริ่ม email/password login |
+
+รายละเอียดใน [login.md](./login.md) — ปิดได้ด้วย `HTTP_PORT=0`
 
 ## 4. Runtime model ภายใน worker
 
@@ -104,6 +121,9 @@ relay กลับ user app
 | `ONIX_APPLICATION_TYPE` | — | `backend` | ค่า header `Onix-Application-Type` |
 | `ONIX_FORWARD_TIMEOUT_MS` | — | `5000` | timeout ของ POST ไป onix (ms) |
 | `BANK_OA_HANDLES` | — | `@scbconnect,@krungthaiconnext,@kbanklive` | รายการ OA ที่ follow + watch |
+| `HTTP_PORT` | — | `3000` | พอร์ต inbound HTTP API (login/health); `0` = ปิด |
+| `HTTP_API_USER` | — | `api` | Basic auth user ของ HTTP API |
+| `HTTP_API_KEY` | — | — | Basic auth key ของ HTTP API; ไม่ตั้ง = เปิดโล่ง |
 | `WATCH_HMAC_SECRET` | — | — | secret เซ็น forward แบบ generic (ออปชัน) |
 | `WATCH_FORWARD_TIMEOUT_MS` | — | `5000` | timeout ของ forward แบบ generic |
 | `PIN_WAIT_TIMEOUT_MS` | — | `300000` | รอ PIN นานสุดก่อน park worker |
@@ -122,5 +142,6 @@ relay กลับ user app
 ## 7. Deployment (สรุป — รายละเอียดใน [../README.md](../README.md))
 
 - Local: `bun install` → `bun run dev` / `bun run start`
-- Docker: `docker compose up --build -d` (ไม่ map port — outbound-only)
-- Deploy script: `scripts/deploy-worker.sh build|run|deploy` (ต้องส่ง env onix เข้า container ด้วย)
+- Docker: `docker compose up --build -d` — เป็น **standalone container**: map **port 3000** (HTTP API)
+  และ **ไม่มี resource limit** (รันเดี่ยว ไม่มี worker/orchestrator คุม)
+- Deploy script: `scripts/deploy-worker.sh build|run|deploy` (ต้องส่ง env onix + HTTP_* เข้า container ด้วย)

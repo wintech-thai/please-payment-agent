@@ -10,15 +10,10 @@ services:
     container_name: rlbotline-worker
     restart: unless-stopped
 
-    # Resource limits per spec: 256MB RAM, 0.2 CPU
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-          cpus: "0.2"
-        reservations:
-          memory: 64M
-          cpus: "0.05"
+    # Standalone app container: exposes port 3000. No resource limits — this
+    # runs on its own, not as a fleet-managed worker under a controller.
+    ports:
+      - "3000:3000"
 
     # Worker is stateless on disk; the only mount is the dev raw-op log sink.
     volumes:

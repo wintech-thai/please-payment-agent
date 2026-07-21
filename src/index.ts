@@ -69,6 +69,8 @@ import { createInterceptFeature } from "./features/intercept.js";
 import { loadWatchedChats, getWatched, addWatched } from "./core/chat-registry.js";
 import { configureForwarder } from "./core/forwarder.js";
 import { configureOnix } from "./core/onix-client.js";
+import { startHttpServer, stopHttpServer } from "./core/http-server.js";
+import { waitForLoginReady } from "./core/login-state.js";
 import { listAllChats, listGroupMembers } from "./core/chat-lister.js";
 import { stateRequest } from "./core/state-client.js";
 import { getClient, kickFromGroup, sendBotMessage } from "./core/line-client.js";
@@ -206,20 +208,34 @@ async function main(): Promise<void> {
   // ── Step 4c: Initialize onix forward target (bank OA → onix) ──
   configureOnix(config.onix);
 
+  // ── Step 4d: Start the inbound HTTP API (login + health on HTTP_PORT) ──
+  // Started before login so a caller can drive login (POST /login/qr or
+  // /login/password) and read /login/status while login is still pending.
+  startHttpServer(config);
+
   // ── Step 5: Authenticate LINE Client ──
   logger.info("Initializing LINE client...");
   const lineClientResult = await initLineClient(config);
-  if (lineClientResult.kind === "pin-timeout") {
-    await parkWorker("PIN timeout");
-    return;
-  }
-  if (lineClientResult.kind === "onboarding-required") {
-    await parkWorker("onboarding required");
-    return;
-  }
-  if (lineClientResult.kind === "login-failed") {
-    await parkWorker(`login failure (${lineClientResult.attempts} attempts exhausted)`);
-    return;
+  if (lineClientResult.kind !== "ready") {
+    if (config.httpApiEnabled) {
+      // Standalone app: the inbound HTTP API drives login. Block here until a
+      // login (POST /login/qr or /login/password) reaches "ready", then fall
+      // through to the normal startup below.
+      logger.warn("Initial login not ready — awaiting login via the HTTP API", {
+        kind: lineClientResult.kind,
+      });
+      await waitForLoginReady();
+    } else {
+      // No inbound API — preserve the legacy park-and-await-restart behavior.
+      const reason =
+        lineClientResult.kind === "pin-timeout"
+          ? "PIN timeout"
+          : lineClientResult.kind === "onboarding-required"
+            ? "onboarding required"
+            : `login failure (${lineClientResult.attempts} attempts exhausted)`;
+      await parkWorker(reason);
+      return;
+    }
   }
   logger.info("LINE client ready");
 
@@ -676,6 +692,7 @@ async function shutdown(signal: string): Promise<void> {
   logger.info(`Shutdown signal received: ${signal}`);
 
   stopHeartbeat();
+  stopHttpServer();
   syncClient.disconnect();
 
   // Stop prune timer

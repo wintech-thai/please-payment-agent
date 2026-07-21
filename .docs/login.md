@@ -1,16 +1,54 @@
-# Login — On-demand QR / email-password ผ่าน central web
+# Login — On-demand QR / email-password
 
-เอกสารนี้อธิบายวิธีที่ **user app สั่งให้ bot ล็อกอิน LINE** (QR หรือ email/password) โดยผ่าน **central web
-(webhook server)** แล้ว bot รายงานสถานะกลับ
+เอกสารนี้อธิบายวิธีสั่งให้ bot ล็อกอิน LINE (QR หรือ email/password) แล้วอ่านสถานะกลับ
 
-## 1. หลักการ
+มี **2 ช่องทาง** ที่รองรับพร้อมกัน:
 
-worker เป็น **outbound-only** — user app **ไม่** ยิงตรงมาที่ worker แต่ยิงไปที่ **central web** แล้ว central
-web เป็นคน "ยิงมาสั่ง" worker ผ่าน **WebSocket RPC** (`/ws/sync`) จากนั้น worker ไปคุยกับ LINE เอา QR/ทำ
-login แล้วรายงานสถานะ (`qrcode` / `pincode` / `ready` / `error`) กลับผ่าน `/webhooks/worker` → central web
-relay ต่อให้ user app
+- **HTTP API (แนะนำสำหรับ standalone app)** — container เปิด HTTP server บน `HTTP_PORT` (default 3000)
+  ให้ยิง `POST /login/qr` หรือ `POST /login/password` มาที่ bot ตรงๆ แล้ว poll `GET /login/status` — ดูข้อ 2
+- **WebSocket RPC (ผ่าน central web)** — central web เรียก RPC `login_qr`/`login_password` ผ่าน `/ws/sync`
+  แล้ว bot รายงานผ่าน webhook events — ดูข้อ 5–6
 
-## 2. Sequence — QR login
+ทั้งสองช่องใช้ login state เดียวกัน ([../src/core/login-state.ts](../src/core/login-state.ts)) และ flow login
+ตัวเดียวกัน ([../src/core/line-client.ts](../src/core/line-client.ts) `startQrLogin`/`startPasswordLogin`)
+
+## 1. Boot behavior (standalone)
+
+ตอน boot `initLineClient()` ลอง login ตามลำดับ token → email/password → QR **ยกเว้น** กรณีไม่มี token และ
+ไม่มี credential **และ** เปิด HTTP API ไว้ (`HTTP_PORT>0`) — worker จะ **ไม่** auto-QR แต่รอให้ app ยิง
+`POST /login/*` เข้ามาแทน (`initLineClient` คืน `onboarding-required`, bootstrap รอ `waitForLoginReady()`
+แล้วค่อยขึ้นระบบต่อเมื่อ login สำเร็จ) → app เป็นคนเลือกวิธี login เอง
+
+## 2. HTTP API (บน HTTP_PORT, default 3000)
+
+| Method + Path | Auth | Body | ผลลัพธ์ |
+|---|---|---|---|
+| `GET /health` | ไม่ต้อง | — | `{ ok, instanceId, uptimeSec, login: <state> }` |
+| `GET /login/status` | Basic | — | `{ ok, state, qrUrl?, pincode?, profileName?, profileMid?, error?, updatedAt }` |
+| `POST /login/qr` | Basic | — | เริ่ม QR login (พื้นหลัง), รอ QR URL สูงสุด ~12s → `202 { ok, state, qrUrl? }` |
+| `POST /login/password` | Basic | `{ email, password }` | เริ่ม email/password login → `202 { ok, state }` |
+
+- **Auth**: `/login/*` ใช้ HTTP Basic auth `HTTP_API_USER:HTTP_API_KEY` (default user `api`) เมื่อตั้ง
+  `HTTP_API_KEY`; ถ้าไม่ตั้งจะเปิดโล่ง (log warning) ส่วน `GET /health` เปิดเสมอ
+- **flow ทั่วไป**: `POST /login/qr` → เอา `qrUrl` ไปแสดงให้ผู้ใช้สแกน → poll `GET /login/status` จนเจอ
+  `pincode` (กรอกในแอป LINE) → จน `state:"ready"`
+- login state: `idle → starting → qr_pending / pin_pending → ready` (หรือ `error`)
+
+ตัวอย่าง:
+```bash
+curl -u api:$HTTP_API_KEY -X POST http://bot:3000/login/qr
+curl -u api:$HTTP_API_KEY http://bot:3000/login/status
+curl -u api:$HTTP_API_KEY -X POST http://bot:3000/login/password \
+  -H 'Content-Type: application/json' -d '{"email":"a@b.com","password":"secret"}'
+```
+
+## 3. หลักการ (WS-RPC ผ่าน central web — ทางเลือก)
+
+อีกทางเลือกหนึ่ง: user app ยิงไปที่ **central web** แล้ว central web "ยิงมาสั่ง" worker ผ่าน **WebSocket
+RPC** (`/ws/sync`) จากนั้น worker ไปคุยกับ LINE เอา QR/ทำ login แล้วรายงานสถานะ (`qrcode` / `pincode` /
+`ready` / `error`) กลับผ่าน `/webhooks/worker` → central web relay ต่อให้ user app
+
+## 4. Sequence — QR login (WS-RPC)
 
 ```mermaid
 sequenceDiagram
@@ -36,7 +74,7 @@ sequenceDiagram
   CW-->>UA: login สำเร็จ
 ```
 
-## 3. Sequence — email/password login
+## 5. Sequence — email/password login (WS-RPC)
 
 ```mermaid
 sequenceDiagram
@@ -57,7 +95,7 @@ sequenceDiagram
   CW-->>UA: ผลลัพธ์
 ```
 
-## 4. RPC ที่ worker รับ (central web เรียก)
+## 6. RPC ที่ worker รับ (central web เรียก)
 
 ลงทะเบียนใน [../src/index.ts](../src/index.ts) บน WebSocket sync hub:
 
@@ -74,7 +112,7 @@ RPC จะ **คืนค่าทันที** (ไม่ block รอสแ�
 `startQrLogin(config)` / `startPasswordLogin(config, email, password)` — reuse auth flow เดิม
 (retry/backoff + PIN-timeout-park semantics เหมือน bootstrap)
 
-## 5. Webhook events ที่ worker ส่งกลับ (central web subscribe)
+## 7. Webhook events ที่ worker ส่งกลับ (central web subscribe)
 
 POST ไป `${API_BASE_URL}/webhooks/worker` header `X-Instance-ID: <instanceId>`
 body: `{ instanceId, event, data, timestamp }` ([../src/core/webhook.ts](../src/core/webhook.ts))
@@ -89,21 +127,25 @@ body: `{ instanceId, event, data, timestamp }` ([../src/core/webhook.ts](../src/
 | `heartbeat` | `{ uptime, memoryMB }` | ทุก 60 วินาที (health) |
 | `shutdown` | `{ reason }` | worker กำลังปิด |
 
-## 6. Auth ladder ตอน boot (เพื่อความเข้าใจ)
+## 8. Auth ladder ตอน boot (เพื่อความเข้าใจ)
 
 นอกจาก on-demand login แล้ว ตอน boot `initLineClient()` ยังลอง login อัตโนมัติตามลำดับ:
 
 1. **Auth token** — `LINE_AUTH_TOKEN` หรือ token ที่ persist ไว้ใน session ของ central web
 2. **Email/password** — จาก session หรือ env `LINE_EMAIL`/`LINE_PASSWORD` (session ชนะ)
-3. **QR** — เมื่อไม่มี token และไม่มี email/password
+3. **QR** — เมื่อไม่มี token และไม่มี email/password **และ** ปิด HTTP API (`HTTP_PORT=0`)
 
-ถ้า login ไม่เสร็จภายใน `PIN_WAIT_TIMEOUT_MS` (default 5 นาที) worker จะ **park** ตัวเอง (idle รอ restart หรือ
-รอ RPC `login_qr`/`login_password` มาเริ่มใหม่)
+> เมื่อเปิด HTTP API ไว้ (default `HTTP_PORT=3000`) กรณีข้อ 3 จะ **ไม่** auto-QR แต่รอ `POST /login/*`
+> แทน (ดูข้อ 1 "Boot behavior")
+
+ถ้าเปิด HTTP API: bootstrap รอ `waitForLoginReady()` จนกว่าจะ login สำเร็จ (ผ่าน HTTP หรือ WS-RPC) แล้วค่อย
+ขึ้นระบบ ถ้าปิด HTTP API และ login ไม่เสร็จภายใน `PIN_WAIT_TIMEOUT_MS` (default 5 นาที) worker จะ **park**
+ตัวเอง (idle รอ restart)
 
 > **หมายเหตุ E2EE:** การ login ใหม่ (ไม่ใช่ token restore) จะหมุนกุญแจ Letter Sealing (E2EE) ข้อความที่
 > เข้ารหัสด้วยกุญแจเก่าจะถอดไม่ได้อีก — worker log/รายงาน warning เมื่อเกิดเหตุนี้
 
-## 7. Credentials & ความปลอดภัย
+## 9. Credentials & ความปลอดภัย
 
 - email/password ที่ส่งผ่าน RPC `login_password` **ไม่ถูก log เป็น plaintext** (log เฉพาะ PIN ตามดีไซน์เดิม
   เพื่อให้ผู้ปฏิบัติงานเห็นจาก log ได้)
