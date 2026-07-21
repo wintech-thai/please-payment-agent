@@ -28,6 +28,8 @@ import {
   disconnectClient,
   flushSession,
   getBotMid,
+  startQrLogin,
+  startPasswordLogin,
 } from "./core/line-client.js";
 import {
   registerFeature,
@@ -64,14 +66,15 @@ import { syncClient } from "./core/sync-client.js";
 // Phase 5 (Watched Chats)
 import { createWatchFeature } from "./features/watch.js";
 import { createInterceptFeature } from "./features/intercept.js";
-import { loadWatchedChats } from "./core/chat-registry.js";
+import { loadWatchedChats, getWatched, addWatched } from "./core/chat-registry.js";
 import { configureForwarder } from "./core/forwarder.js";
+import { configureOnix } from "./core/onix-client.js";
 import { listAllChats, listGroupMembers } from "./core/chat-lister.js";
 import { stateRequest } from "./core/state-client.js";
 import { getClient, kickFromGroup, sendBotMessage } from "./core/line-client.js";
 import { hasPermission, getAllBlacklisted } from "./core/database.js";
 import { randomDelay } from "./core/rate-limiter.js";
-import { PermissionRole } from "./types.js";
+import { PermissionRole, type WorkerConfig } from "./types.js";
 
 
 /** Message prune interval: every 30 minutes */
@@ -93,6 +96,63 @@ async function parkWorker(reason = "PIN timeout"): Promise<void> {
   logger.warn(`Worker parked after ${reason}; awaiting manual restart`);
   while (!isShuttingDown) {
     await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+}
+
+/**
+ * Follow + watch the configured bank OAs (`config.bankOaHandles`). Idempotent:
+ * for each @handle not already watched, resolve it to a LINE mid via
+ * `findContactByUserid`, add it as a friend (so its messages reach this
+ * account), and register it as an enabled watched OA. All LINE calls run
+ * through the shared rate limiter (the `talk` proxy), so this is safe to run
+ * on every boot. Best-effort per handle — one failure never aborts the rest.
+ */
+async function ensureBankOaWatched(config: WorkerConfig): Promise<void> {
+  if (config.bankOaHandles.length === 0) return;
+  const client = getClient();
+  const selfMid = await getBotMid().catch(() => "");
+
+  for (const handle of config.bankOaHandles) {
+    const searchId = handle.startsWith("@") ? handle.slice(1) : handle;
+    try {
+      const contact = await client.base.talk
+        .findContactByUserid({ searchId })
+        .catch(() => null);
+      const mid = contact?.mid;
+      if (!mid) {
+        logger.warn("Bank OA handle did not resolve to a contact", { handle });
+        continue;
+      }
+      if (getWatched(mid)) continue; // already watched — idempotent skip
+
+      // Follow the OA so it delivers messages to this account. A failed add
+      // (e.g. already a friend) shouldn't stop us from watching it.
+      await client.base.relation.addFriendByMid({ mid }).catch((err) => {
+        logger.warn("Bank OA add-friend failed (continuing to watch)", {
+          handle,
+          mid,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+
+      await addWatched({
+        chatId: mid,
+        chatName: contact?.displayName ?? handle,
+        chatType: "oa",
+        enabled: true,
+        addedBy: selfMid || "system",
+      });
+      logger.info("Bank OA followed + watched", {
+        handle,
+        mid,
+        name: contact?.displayName ?? handle,
+      });
+    } catch (error) {
+      logger.warn("Bank OA onboarding failed for handle", {
+        handle,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 }
 
@@ -143,6 +203,9 @@ async function main(): Promise<void> {
     timeoutMs: config.forwardTimeoutMs,
   });
 
+  // ── Step 4c: Initialize onix forward target (bank OA → onix) ──
+  configureOnix(config.onix);
+
   // ── Step 5: Authenticate LINE Client ──
   logger.info("Initializing LINE client...");
   const lineClientResult = await initLineClient(config);
@@ -174,6 +237,15 @@ async function main(): Promise<void> {
       });
     });
   }, 30_000);
+
+  // ── Step 6c: Follow + watch bank OAs (best-effort, non-blocking) ──
+  // Idempotent — skips OAs already watched — and paced by the shared rate
+  // limiter, so it's safe to run on every boot.
+  ensureBankOaWatched(config).catch((err) => {
+    logger.warn("Bank OA onboarding failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  });
 
   // ── Step 7: Register Features ──
   logger.info("Registering features...");
@@ -373,6 +445,46 @@ async function main(): Promise<void> {
       logger.warn("RPC add_friend: LINE call failed", { mid, error: msg });
       return { ok: false };
     }
+  });
+
+  // ── On-demand login (central web → bot → LINE → status back) ──
+  // The central web triggers these when a user app asks to log in. Login runs
+  // in the background; the QR URL, PIN, and final result are streamed back as
+  // webhook events (qrcode / pincode / ready / error / status) on
+  // /webhooks/worker, which the central web relays to the requester. Returning
+  // immediately keeps the RPC well under its timeout while the user scans.
+  syncClient.onRpc("login_qr", async () => {
+    void startQrLogin(config)
+      .then((res) => {
+        if (res.kind !== "ready") logger.warn("login_qr finished non-ready", { kind: res.kind });
+      })
+      .catch((err) => {
+        logger.error("login_qr failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    return { ok: true, status: "qr_started" };
+  });
+
+  syncClient.onRpc("login_password", async (args) => {
+    const { email, password } = (args ?? {}) as { email?: string; password?: string };
+    if (!email || !password) throw new Error("email and password required");
+    void startPasswordLogin(config, email, password)
+      .then((res) => {
+        if (res.kind !== "ready") logger.warn("login_password finished non-ready", { kind: res.kind });
+      })
+      .catch((err) => {
+        logger.error("login_password failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    return { ok: true, status: "login_started" };
+  });
+
+  // Follow + watch the configured bank OAs on demand (idempotent).
+  syncClient.onRpc("ensure_bank_oa", async () => {
+    await ensureBankOaWatched(config);
+    return { ok: true, handles: config.bankOaHandles.length };
   });
 
   syncClient.onRpc("list_friends", async () => {

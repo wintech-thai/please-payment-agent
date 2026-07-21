@@ -36,6 +36,13 @@ export type LineClientInitResult =
 
 let client: Client | null = null;
 let botMid = "";
+/** Device + storage passed to linejs login — cached so an on-demand re-login
+ *  (triggered by the `login_qr`/`login_password` RPCs) reuses the same session
+ *  storage instead of dropping the persisted blob. */
+let loginDeviceOptions: { device: Device; storage: BaseStorage } | null = null;
+/** True while a login attempt is running, so a bootstrap login and an RPC-
+ *  triggered login can't run concurrently and fight over the client. */
+let loginInFlight = false;
 const PIN_TIMEOUT_POLL_MS = 250;
 const PIN_TIMEOUT_REASON = "pin_timeout";
 const PIN_TIMEOUT_MESSAGE = "PIN wait timed out; restart the bot to request a new PIN";
@@ -506,6 +513,160 @@ async function attemptLoginWithRetry(
 }
 
 /**
+ * Build a QR-login attempt: races `loginWithQR` against the PIN-wait timeout,
+ * wiring the QR URL + PIN callbacks to the Central API reporters (`reportQr`/
+ * `reportPincode`) so the central web can relay them to whoever requested the
+ * login. Shared by the bootstrap flow and the on-demand `startQrLogin`.
+ */
+function buildQrAttempt(
+  deviceOptions: { device: Device; storage: BaseStorage },
+  pinWaitTimeoutMs: number,
+): () => Promise<LoginAttemptOutcome> {
+  return async () => {
+    let qrRequestedAt: number | null = null;
+    // Cancels the losing side of the race once it settles, so a finished login
+    // attempt doesn't leave `waitForPinTimeout` polling until the timeout.
+    const pinTimeoutAbort = new AbortController();
+    try {
+      return await Promise.race([
+        loginWithQR(
+          {
+            onReceiveQRUrl(url: string) {
+              qrRequestedAt = Date.now();
+              // Log the URL too so a standalone worker can be logged in by
+              // scanning it straight from the container logs.
+              logger.info("QR login URL received — scan to log in", { url });
+              reportQr(url).catch((err) => {
+                logger.error("Failed to report QR URL", {
+                  error: err instanceof Error ? err.message : String(err),
+                });
+              });
+            },
+            onPincodeRequest(pincode: string) {
+              logger.info("QR PIN code received", { pincode });
+              reportPincode(pincode).catch((err) => {
+                logger.error("Failed to report PIN code", {
+                  error: err instanceof Error ? err.message : String(err),
+                });
+              });
+            },
+          },
+          deviceOptions,
+        ).then((lineClient) => ({ kind: "ready" as const, lineClient })),
+        waitForPinTimeout(() => qrRequestedAt, pinWaitTimeoutMs, pinTimeoutAbort.signal).then(
+          (timeout) => ({ kind: "pin-timeout" as const, ...timeout }),
+        ),
+      ]);
+    } finally {
+      pinTimeoutAbort.abort();
+    }
+  };
+}
+
+/**
+ * Build an email/password login attempt: races `loginWithPassword` against the
+ * PIN-wait timeout, reporting any 2FA PIN via `reportPincode`. Shared by the
+ * bootstrap flow and the on-demand `startPasswordLogin`.
+ */
+function buildPasswordAttempt(
+  deviceOptions: { device: Device; storage: BaseStorage },
+  email: string,
+  password: string,
+  pinWaitTimeoutMs: number,
+): () => Promise<LoginAttemptOutcome> {
+  return async () => {
+    let pinRequestedAt: number | null = null;
+    const pinTimeoutAbort = new AbortController();
+    try {
+      return await Promise.race([
+        loginWithPassword(
+          {
+            email,
+            password,
+            onPincodeRequest(pincode: string) {
+              pinRequestedAt = Date.now();
+              logger.info("PIN code received", { pincode });
+              reportPincode(pincode).catch((err) => {
+                logger.error("Failed to report PIN code", {
+                  error: err instanceof Error ? err.message : String(err),
+                });
+              });
+            },
+          },
+          deviceOptions,
+        ).then((lineClient) => ({ kind: "ready" as const, lineClient })),
+        waitForPinTimeout(() => pinRequestedAt, pinWaitTimeoutMs, pinTimeoutAbort.signal).then(
+          (timeout) => ({ kind: "pin-timeout" as const, ...timeout }),
+        ),
+      ]);
+    } finally {
+      pinTimeoutAbort.abort();
+    }
+  };
+}
+
+/**
+ * Return the cached login device options, or build fresh ones if login hasn't
+ * run yet — covers an on-demand login RPC arriving before `initLineClient` had
+ * a chance to set them up (e.g. a worker that started with no credentials).
+ */
+function ensureLoginDeviceOptions(
+  config: WorkerConfig,
+): { device: Device; storage: BaseStorage } {
+  if (loginDeviceOptions) return loginDeviceOptions;
+  initSharedLimiter(config.rateLimitCalls, config.rateLimitWindowMs);
+  const storage = new ApiSessionStorage();
+  sessionStorage = storage;
+  loginDeviceOptions = { device: parseDevice(config.device), storage };
+  return loginDeviceOptions;
+}
+
+/**
+ * Start (or restart) a QR login on demand — invoked by the `login_qr` RPC when
+ * the central web asks this bot to log in. The QR URL and any PIN are reported
+ * to the Central API as they arrive (webhook events `qrcode`/`pincode`); this
+ * resolves once login settles (ready / pin-timeout / failed). Refuses to run
+ * when a login is already in flight.
+ */
+export async function startQrLogin(config: WorkerConfig): Promise<LineClientInitResult> {
+  if (loginInFlight) {
+    return { kind: "login-failed", message: "login already in progress", attempts: 0 };
+  }
+  loginInFlight = true;
+  try {
+    const opts = ensureLoginDeviceOptions(config);
+    return await attemptLoginWithRetry(buildQrAttempt(opts, config.pinWaitTimeoutMs), "QR", false);
+  } finally {
+    loginInFlight = false;
+  }
+}
+
+/**
+ * Start (or restart) an email/password login on demand — invoked by the
+ * `login_password` RPC. Any 2FA PIN is reported via the webhook `pincode` event.
+ */
+export async function startPasswordLogin(
+  config: WorkerConfig,
+  email: string,
+  password: string,
+): Promise<LineClientInitResult> {
+  if (loginInFlight) {
+    return { kind: "login-failed", message: "login already in progress", attempts: 0 };
+  }
+  loginInFlight = true;
+  try {
+    const opts = ensureLoginDeviceOptions(config);
+    return await attemptLoginWithRetry(
+      buildPasswordAttempt(opts, email, password, config.pinWaitTimeoutMs),
+      "Email/password",
+      false,
+    );
+  } finally {
+    loginInFlight = false;
+  }
+}
+
+/**
  * Initialize the LINE client with the smart auth flow:
  * 1. Try persisted token from Central API / env auth token
  * 2. Fall back to email/password login when credentials are available, else
@@ -538,7 +699,8 @@ export async function initLineClient(config: WorkerConfig): Promise<LineClientIn
   const storage = new ApiSessionStorage(initialStorage);
   sessionStorage = storage;
   const device = parseDevice(config.device);
-  const deviceOptions = { device, storage };
+  loginDeviceOptions = { device, storage };
+  const deviceOptions = loginDeviceOptions;
 
   const authToken = session.authToken ?? config.lineAuthToken;
   // Credentials reach the worker from the Central API session first and, when
@@ -567,87 +729,24 @@ export async function initLineClient(config: WorkerConfig): Promise<LineClientIn
   // via the persisted session or the LINE_EMAIL/LINE_PASSWORD env vars.
   if (!fallbackLineEmail || !fallbackLinePassword) {
     logger.info("No token or email/password; starting QR login");
-
-    const performQrAttempt = async (): Promise<LoginAttemptOutcome> => {
-      let qrRequestedAt: number | null = null;
-      // Cancels the losing side of the race below once it settles, so a
-      // finished login attempt doesn't leave `waitForPinTimeout` still
-      // polling every 250ms until `pinWaitTimeoutMs` elapses (see that
-      // function's doc comment).
-      const pinTimeoutAbort = new AbortController();
-
-      try {
-        return await Promise.race([
-          loginWithQR(
-            {
-              onReceiveQRUrl(url: string) {
-                qrRequestedAt = Date.now();
-                // Log the URL itself so a standalone worker (no dashboard) can
-                // be logged in by scanning it straight from the container logs.
-                logger.info("QR login URL received — scan to log in", { url });
-                reportQr(url).catch((err) => {
-                  logger.error("Failed to report QR URL", {
-                    error: err instanceof Error ? err.message : String(err),
-                  });
-                });
-              },
-              onPincodeRequest(pincode: string) {
-                logger.info("QR PIN code received", { pincode });
-                reportPincode(pincode).catch((err) => {
-                  logger.error("Failed to report PIN code", {
-                    error: err instanceof Error ? err.message : String(err),
-                  });
-                });
-              },
-            },
-            deviceOptions,
-          ).then((lineClient) => ({ kind: "ready" as const, lineClient })),
-          waitForPinTimeout(() => qrRequestedAt, config.pinWaitTimeoutMs, pinTimeoutAbort.signal).then(
-            (timeout) => ({ kind: "pin-timeout" as const, ...timeout }),
-          ),
-        ]);
-      } finally {
-        pinTimeoutAbort.abort();
-      }
-    };
-
-    return attemptLoginWithRetry(performQrAttempt, "QR", Boolean(authToken));
+    return attemptLoginWithRetry(
+      buildQrAttempt(deviceOptions, config.pinWaitTimeoutMs),
+      "QR",
+      Boolean(authToken),
+    );
   }
 
   logger.info("Attempting login with email/password");
-
-  const performPasswordAttempt = async (): Promise<LoginAttemptOutcome> => {
-    let pinRequestedAt: number | null = null;
-    const pinTimeoutAbort = new AbortController();
-
-    try {
-      return await Promise.race([
-        loginWithPassword(
-          {
-            email: fallbackLineEmail,
-            password: fallbackLinePassword,
-            onPincodeRequest(pincode: string) {
-              pinRequestedAt = Date.now();
-              logger.info("PIN code received", { pincode });
-              reportPincode(pincode).catch((err) => {
-                logger.error("Failed to report PIN code", {
-                  error: err instanceof Error ? err.message : String(err),
-                });
-              });
-            },
-          },
-          deviceOptions,
-        ).then((lineClient) => ({ kind: "ready" as const, lineClient })),
-        waitForPinTimeout(() => pinRequestedAt, config.pinWaitTimeoutMs, pinTimeoutAbort.signal).then(
-          (timeout) => ({ kind: "pin-timeout" as const, ...timeout }),
-        ),
-      ]);
-    } finally {
-      pinTimeoutAbort.abort();
-    }
-  };
-
-  return attemptLoginWithRetry(performPasswordAttempt, "Email/password", Boolean(authToken));
+  return attemptLoginWithRetry(
+    buildPasswordAttempt(
+      deviceOptions,
+      fallbackLineEmail,
+      fallbackLinePassword,
+      config.pinWaitTimeoutMs,
+    ),
+    "Email/password",
+    Boolean(authToken),
+  );
 }
 
 /**

@@ -13,6 +13,7 @@ import { onRawMessage, type RawMessage } from "../core/event-router.js";
 import { getWatched, isLoaded, getCompiledRegex } from "../core/chat-registry.js";
 import { getWebhookTargets } from "../core/database.js";
 import { fanOut, type ForwardedMessage } from "../core/forwarder.js";
+import { isOnixEnabled, notifyLineMessage } from "../core/onix-client.js";
 import { logger } from "../core/logger.js";
 import type { Feature, OutboundWebhookTarget, WorkerConfig } from "../types.js";
 
@@ -127,6 +128,30 @@ export function createInterceptFeature(config: WorkerConfig): Feature {
         messageId: msg.id,
         error: errMsg,
       });
+    }
+
+    // onix (destination server): bank-OA notifications only. onix's
+    // NotifyLineMessage carries `title` + `text`, so a message with no text
+    // (media/sticker) has nothing to deliver — skip it, but log rather than
+    // drop silently so an all-media OA is diagnosable.
+    if (isOnixEnabled() && watched.chatType === "oa") {
+      if (msg.text.trim().length === 0) {
+        logger.debug("onix skip: watched OA message has no text", {
+          chatId: msg.chatId,
+          messageId: msg.id,
+          contentType: payload.contentType,
+        });
+      } else {
+        const result = await notifyLineMessage({ title: watched.chatName, text: msg.text });
+        if (!result.ok && !result.skipped) {
+          logger.warn("onix notify failed for watched OA", {
+            chatId: msg.chatId,
+            messageId: msg.id,
+            status: result.status,
+            error: result.error,
+          });
+        }
+      }
     }
   });
 

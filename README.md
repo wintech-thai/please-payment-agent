@@ -7,8 +7,17 @@ isolated container. The worker is stateless on disk — all persistence
 which the worker reaches over HTTP (`/state/*`, `/webhooks/*`, `/ws/sync`).
 
 > This repo is a copy of the worker module from the main monorepo. It talks to a
-> Central API instance you point it at via `API_BASE_URL`; it does **not** bundle
-> the API or the web dashboard.
+> Central API instance (the "central web" / webhook server) you point it at via
+> `API_BASE_URL`; it does **not** bundle the API or the web dashboard.
+
+**สิ่งที่ worker ทำ:**
+
+1. **ติดตาม LINE OA ธนาคาร** (`@scbconnect`, `@krungthaiconnext`, `@kbanklive`) แล้ว **forward ข้อความ
+   ไปยัง onix** (destination server) ผ่าน endpoint `NotifyLineMessage` — ดู [.docs/forwarding.md](.docs/forwarding.md)
+2. เปิดให้ **user app ล็อกอิน LINE** ทั้งแบบ **QR** และ **email/password** ผ่าน central web — ดู
+   [.docs/login.md](.docs/login.md)
+
+📐 **สถาปัตยกรรมทั้งหมดอยู่ใน [.docs/](.docs/)** — เริ่มที่ [.docs/architecture.md](.docs/architecture.md)
 
 ## Login
 
@@ -28,10 +37,19 @@ worker parks itself and must be restarted for a fresh PIN.
 > **Anti-ban:** never run multiple bots behind the same host IP. Give each worker
 > a unique `PROXY_URL`, and keep loop delays intact (Tag All, sweeps, etc.).
 
+## Requirements
+
+- **Bun** (runs the TypeScript directly — no build step). Docker image uses `oven/bun:1-slim`.
+- A reachable **central web / Central API** at `API_BASE_URL` exposing `/state/*`, `/webhooks/*`, `/ws/sync`.
+- Required env: **`API_BASE_URL`**, **`INSTANCE_TOKEN`**, **`INSTANCE_ID`**.
+- For onix forwarding (optional): **`ONIX_API_URL`** + **`ONIX_AGENT_ID`** + **`ONIX_API_KEY`** (see below).
+- A LINE account to log in as — via token / email+password / QR (see [Login](#login)).
+
 ## Quick start
 
 ```bash
 cp .env.example .env      # fill in API_BASE_URL, INSTANCE_TOKEN, INSTANCE_ID,
+                          # onix vars (ONIX_API_URL/ONIX_AGENT_ID/ONIX_API_KEY),
                           # and either LINE_EMAIL/LINE_PASSWORD or nothing (QR)
 bun install
 bun run dev               # or: bun run start
@@ -56,8 +74,25 @@ for the full list. Key ones:
 | `INSTANCE_ID` | Unique id for this bot instance |
 | `LINE_EMAIL` / `LINE_PASSWORD` | Standalone email/password login (optional) |
 | `LINE_AUTH_TOKEN` | Optional pre-issued auth token |
+| `ONIX_API_URL` | onix base URL — enables onix forwarding when set (with agent id + key) |
+| `ONIX_AGENT_ID` | onix agent UUID that receives `NotifyLineMessage` |
+| `ONIX_API_USER` / `ONIX_API_KEY` | Basic auth for onix (default user `api`; key is the password) |
+| `ONIX_ORG` / `ONIX_APPLICATION_TYPE` | onix path org segment (`global`) / `Onix-Application-Type` header (`backend`) |
+| `BANK_OA_HANDLES` | LINE @handles to follow + watch (default: the 3 bank OAs) |
 | `PROXY_URL` | Per-instance proxy (anti-ban) |
 | `PIN_WAIT_TIMEOUT_MS` | How long to wait for the 2FA PIN before parking |
+
+### Forwarding to onix
+
+Watched **bank OA** messages are POSTed to onix's `NotifyLineMessage` with Basic auth
+(`api:<key>`). onix forwarding is **off** unless `ONIX_API_URL` + `ONIX_AGENT_ID` + `ONIX_API_KEY`
+are all set. Full contract (endpoint, headers, payload mapping): [.docs/forwarding.md](.docs/forwarding.md).
+
+### Login via the central web
+
+The central web triggers login over the sync hub (RPC `login_qr` / `login_password`); the worker
+reports the QR URL / PIN / result back as webhook events (`qrcode`, `pincode`, `ready`, `error`).
+Flow + event payloads: [.docs/login.md](.docs/login.md).
 
 ## Scripts
 
@@ -72,11 +107,12 @@ bun run verify      # typecheck + test
 ## Layout
 
 ```
+.docs/        architecture, forwarding (bank OA → onix), login flow
 src/
-  core/       LINE client, event router, state client, sync, webhook, rate limiter, …
-  features/   anti-unsend, tagall, welcome/goodbye, sub-admin, anti-kick/link/spam, sync, watch, …
-  index.ts    worker bootstrap + lifecycle
-  types.ts    shared types (WorkerConfig, records, LINE op types)
+  core/       LINE client, event router, state client, sync, webhook, forwarder, onix-client, rate limiter, …
+  features/   anti-unsend, tagall, welcome/goodbye, sub-admin, anti-kick/link/spam, sync, watch, intercept, …
+  index.ts    worker bootstrap + lifecycle + sync-hub RPC handlers (incl. login_qr/login_password)
+  types.ts    shared types (WorkerConfig, OnixConfig, records, LINE op types)
 scripts/
   worker-entrypoint.sh   Docker entrypoint (optional INSTANCE_TOKEN rotation)
   test-units.test.ts     unit + login-retry tests

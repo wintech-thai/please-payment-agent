@@ -242,6 +242,33 @@ export enum LineOpType {
 
 // ─── Config ───────────────────────────────────────────────────────
 
+/**
+ * onix (destination server) NotifyLineMessage forward target.
+ *
+ * Bank-OA messages the worker watches are POSTed to
+ *   {apiUrl}/admin-api/AdminAgent/org/{org}/action/NotifyLineMessage/{agentId}
+ * with Basic auth ("{apiUser}:{apiKey}") and an `Onix-Application-Type` header —
+ * see `src/core/onix-client.ts`. Disabled unless apiUrl + agentId + apiKey are set.
+ */
+export interface OnixConfig {
+  /** True when apiUrl + agentId + apiKey are all present. */
+  enabled: boolean;
+  /** Base URL of the onix API, no trailing slash (e.g. https://api.onix.example.com). */
+  apiUrl: string;
+  /** Path segment used as `org/{org}` — defaults to "global". */
+  org: string;
+  /** onix agent UUID that receives NotifyLineMessage. */
+  agentId: string;
+  /** Basic auth username — defaults to "api". */
+  apiUser: string;
+  /** Basic auth password / API key (secret). */
+  apiKey: string;
+  /** Value of the `Onix-Application-Type` header — defaults to "backend". */
+  appType: string;
+  /** Per-request timeout for onix POSTs (ms). */
+  timeoutMs: number;
+}
+
 export interface WorkerConfig {
   lineAuthToken: string | undefined;
   /**
@@ -271,6 +298,10 @@ export interface WorkerConfig {
   forwardTimeoutMs: number;
   /** Max time to wait after a PIN is issued before parking the worker (ms) */
   pinWaitTimeoutMs: number;
+  /** onix NotifyLineMessage forward target (bank OA → onix). Disabled when unconfigured. */
+  onix: OnixConfig;
+  /** LINE @handles of bank OAs to follow + watch (e.g. ["@scbconnect", "@krungthaiconnext", "@kbanklive"]). */
+  bankOaHandles: string[];
   logLevel: LogLevel;
 }
 

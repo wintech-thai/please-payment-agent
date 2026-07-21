@@ -700,6 +700,102 @@ describe("🛰️ Forwarder", () => {
   });
 });
 
+// ─── onix client (onix-client.ts) ───────────────────────────────
+import { configureOnix, notifyLineMessage, isOnixEnabled } from "../src/core/onix-client.js";
+import type { OnixConfig } from "../src/types.js";
+
+describe("🏦 onix-client — notifyLineMessage()", () => {
+  function onixConfig(apiUrl: string, over: Partial<OnixConfig> = {}): OnixConfig {
+    return {
+      enabled: true,
+      apiUrl,
+      org: "global",
+      agentId: "198b743a-4579-41ee-853f-a748f6a40825",
+      apiUser: "api",
+      apiKey: "apikey",
+      appType: "backend",
+      timeoutMs: 2000,
+      ...over,
+    };
+  }
+
+  test("POSTs NotifyLineMessage with Basic auth, Onix-Application-Type, and mapped body", async () => {
+    let captured:
+      | { path: string; auth: string | null; appType: string | null; body: Record<string, unknown> }
+      | null = null;
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        captured = {
+          path: new URL(req.url).pathname,
+          auth: req.headers.get("authorization"),
+          appType: req.headers.get("onix-application-type"),
+          body: (await req.json()) as Record<string, unknown>,
+        };
+        return new Response("ok");
+      },
+    });
+    try {
+      configureOnix(onixConfig(`http://localhost:${server.port}`));
+      expect(isOnixEnabled()).toBe(true);
+      const result = await notifyLineMessage({
+        title: "Krungthai Connext",
+        text: "เงินเข้า 23.25 บาท",
+      });
+      expect(result.ok).toBe(true);
+      expect(captured).not.toBeNull();
+      expect(captured!.path).toBe(
+        "/admin-api/AdminAgent/org/global/action/NotifyLineMessage/198b743a-4579-41ee-853f-a748f6a40825",
+      );
+      expect(captured!.auth).toBe(`Basic ${Buffer.from("api:apikey").toString("base64")}`);
+      expect(captured!.appType).toBe("backend");
+      expect(captured!.body).toEqual({
+        sourceType: "NOTIFICATION",
+        sourceKey: "jp.naver.line.android",
+        sourceLabel: "LINE",
+        title: "Krungthai Connext",
+        text: "เงินเข้า 23.25 บาท",
+      });
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("respects a custom apiUser and org in the endpoint + Basic auth", async () => {
+    let captured: { path: string; auth: string | null } | null = null;
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        captured = { path: new URL(req.url).pathname, auth: req.headers.get("authorization") };
+        return new Response("ok");
+      },
+    });
+    try {
+      configureOnix(onixConfig(`http://localhost:${server.port}`, { org: "acme", apiUser: "svc" }));
+      await notifyLineMessage({ title: "t", text: "x" });
+      expect(captured!.path).toContain("/org/acme/action/NotifyLineMessage/");
+      expect(captured!.auth).toBe(`Basic ${Buffer.from("svc:apikey").toString("base64")}`);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("skips (skipped:true) when onix is not enabled", async () => {
+    configureOnix(onixConfig("http://localhost:1", { enabled: false }));
+    expect(isOnixEnabled()).toBe(false);
+    const result = await notifyLineMessage({ title: "x", text: "y" });
+    expect(result.skipped).toBe(true);
+    expect(result.ok).toBe(false);
+  });
+
+  test("never throws on network failure (returns ok:false, not skipped)", async () => {
+    configureOnix(onixConfig("http://127.0.0.1:1", { timeoutMs: 300 }));
+    const result = await notifyLineMessage({ title: "x", text: "y" });
+    expect(result.ok).toBe(false);
+    expect(result.skipped).toBeUndefined();
+  });
+});
+
 // ─── Intercept raw-payload redaction ─────────────────────────────
 import { redactRaw } from "../src/features/intercept.js";
 

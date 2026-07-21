@@ -5,7 +5,7 @@
  * Fails fast with clear error messages if required vars are missing.
  */
 
-import type { WorkerConfig, LogLevel } from "../types.js";
+import type { WorkerConfig, LogLevel, OnixConfig } from "../types.js";
 
 const LOG_LEVELS: LogLevel[] = ["debug", "info", "warn", "error"];
 
@@ -57,6 +57,31 @@ export function loadConfig(): WorkerConfig {
 
   const apiBaseUrl = requireEnv("API_BASE_URL").replace(/\/+$/, "");
 
+  // onix (destination server) forward target. Enabled only when the URL, agent
+  // id and key are all present, so an unconfigured worker simply skips onix.
+  const onixApiUrl = optionalTrimmedEnv("ONIX_API_URL")?.replace(/\/+$/, "");
+  const onixAgentId = optionalTrimmedEnv("ONIX_AGENT_ID");
+  const onixApiKey = optionalTrimmedEnv("ONIX_API_KEY");
+  const onix: OnixConfig = {
+    enabled: Boolean(onixApiUrl && onixAgentId && onixApiKey),
+    apiUrl: onixApiUrl ?? "",
+    org: optionalEnv("ONIX_ORG", "global"),
+    agentId: onixAgentId ?? "",
+    apiUser: optionalEnv("ONIX_API_USER", "api"),
+    apiKey: onixApiKey ?? "",
+    appType: optionalEnv("ONIX_APPLICATION_TYPE", "backend"),
+    timeoutMs: optionalInt("ONIX_FORWARD_TIMEOUT_MS", 5000),
+  };
+
+  // Bank OAs the worker follows + watches. Defaults to the three Thai bank OAs.
+  const bankOaHandles = optionalEnv(
+    "BANK_OA_HANDLES",
+    "@scbconnect,@krungthaiconnext,@kbanklive",
+  )
+    .split(",")
+    .map((h) => h.trim())
+    .filter((h) => h.length > 0);
+
   const config: WorkerConfig = {
     lineAuthToken: optionalTrimmedEnv("LINE_AUTH_TOKEN"),
     // Standalone login credentials sent directly to the worker via env. Used as
@@ -80,6 +105,8 @@ export function loadConfig(): WorkerConfig {
     watchHmacSecret: optionalTrimmedEnv("WATCH_HMAC_SECRET"),
     forwardTimeoutMs: optionalInt("WATCH_FORWARD_TIMEOUT_MS", 5000),
     pinWaitTimeoutMs: optionalInt("PIN_WAIT_TIMEOUT_MS", 300000),
+    onix,
+    bankOaHandles,
     logLevel,
   };
 
