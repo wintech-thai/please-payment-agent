@@ -126,11 +126,47 @@ describe("⚙️ Config", () => {
     process.env["RATE_LIMIT_CALLS"] = "5";
   });
 
-  test("loadConfig throws on missing API_BASE_URL", () => {
+  test("loadConfig runs standalone when API_BASE_URL is missing", () => {
     const saved = process.env["API_BASE_URL"];
+    const savedWebhook = process.env["WEBHOOK_URL"];
+    const savedWatch = process.env["WATCH_CHAT_IDS"];
     delete process.env["API_BASE_URL"];
-    expect(() => loadConfig()).toThrow("API_BASE_URL");
+    delete process.env["WEBHOOK_URL"];
+    process.env["WATCH_CHAT_IDS"] = "c111, c222 ,c333";
+
+    const config = loadConfig();
+    expect(config.apiBaseUrl).toBeUndefined();
+    expect(config.centralApiEnabled).toBe(false);
+    expect(config.webhookUrl).toBeUndefined();
+    expect(config.watchChatIds).toEqual(["c111", "c222", "c333"]);
+    expect(config.redis.enabled).toBe(false);
+
     process.env["API_BASE_URL"] = saved;
+    if (savedWebhook === undefined) delete process.env["WEBHOOK_URL"];
+    else process.env["WEBHOOK_URL"] = savedWebhook;
+    if (savedWatch === undefined) delete process.env["WATCH_CHAT_IDS"];
+    else process.env["WATCH_CHAT_IDS"] = savedWatch;
+  });
+
+  test("loadConfig reads Redis config with defaults", () => {
+    const savedHost = process.env["REDIS_HOST"];
+    const savedPort = process.env["REDIS_PORT"];
+    const savedPrefix = process.env["REDIS_KEY_PREFIX"];
+    process.env["REDIS_HOST"] = "redis";
+    delete process.env["REDIS_PORT"];
+    delete process.env["REDIS_KEY_PREFIX"];
+    process.env["INSTANCE_ID"] = "test-001";
+
+    const config = loadConfig();
+    expect(config.redis.enabled).toBe(true);
+    expect(config.redis.host).toBe("redis");
+    expect(config.redis.port).toBe(6379);
+    expect(config.redis.keyPrefix).toBe("rlbotline:test-001");
+
+    if (savedHost === undefined) delete process.env["REDIS_HOST"];
+    else process.env["REDIS_HOST"] = savedHost;
+    if (savedPort !== undefined) process.env["REDIS_PORT"] = savedPort;
+    if (savedPrefix !== undefined) process.env["REDIS_KEY_PREFIX"] = savedPrefix;
   });
 
   test("loadConfig throws on missing INSTANCE_TOKEN", () => {
@@ -3030,4 +3066,131 @@ describe("🔁 recoverRoster() — recover_group RPC filtering + counting (group
     expect(calls[1]).toEqual({ chatMid: "c_dest_3", targetUserMids: normalMids.slice(5) });
     server.stop(true);
   }, 10000); // 2 chunks x (gateOutbound + randomDelay(500,1200)) — same jitter budget anti-kick's re-invite tests tolerate.
+});
+
+// ─── Standalone mode (no Central API) + Redis session ─────────────────
+import {
+  configureRedis,
+  __setRedisForTest,
+  getRedis,
+  redisKey,
+  isRedisEnabled,
+  closeRedis,
+  type RedisLike,
+} from "../src/core/redis-client.js";
+import {
+  RedisSessionStorage,
+  loadSessionFromRedis,
+  persistAuthToken,
+} from "../src/core/line-client.js";
+import { __resetStateClientForTest, isCentralApiEnabled } from "../src/core/state-client.js";
+import {
+  seedWatchedChats,
+  getWatched,
+  isLoaded,
+  loadWatchedChats,
+} from "../src/core/chat-registry.js";
+import { getWebhookTargets, hasPermission } from "../src/core/database.js";
+
+/** Map-backed fake implementing the RedisLike subset the worker uses. */
+function makeFakeRedis(): RedisLike & { store: Map<string, string> } {
+  const store = new Map<string, string>();
+  return {
+    store,
+    async get(key: string) {
+      return store.has(key) ? store.get(key)! : null;
+    },
+    async set(key: string, value: string) {
+      store.set(key, value);
+      return "OK";
+    },
+    async del(...keys: string[]) {
+      let n = 0;
+      for (const k of keys) if (store.delete(k)) n++;
+      return n;
+    },
+    async connect() {
+      return undefined;
+    },
+    close() {
+      /* no-op */
+    },
+  };
+}
+
+describe("🧰 Standalone (no Central API)", () => {
+  test("configureRedis(disabled) leaves Redis off", () => {
+    configureRedis({ enabled: false, host: "", port: 6379, keyPrefix: "x" });
+    expect(isRedisEnabled()).toBe(false);
+    expect(getRedis()).toBeNull();
+  });
+
+  test("state layer degrades to safe defaults when Central API is disabled", async () => {
+    __resetStateClientForTest();
+    expect(isCentralApiEnabled()).toBe(false);
+    expect(await getWebhookTargets()).toEqual([]);
+    expect(await hasPermission("u_someone", PermissionRole.ADMIN)).toBe(false);
+    // A write must not throw (it no-ops) — anti-unsend's cache path calls this.
+    const { cacheMessage } = await import("../src/core/database.js");
+    await cacheMessage({
+      id: "m1",
+      chatId: "c1",
+      senderId: "u1",
+      senderName: "n",
+      contentType: 0,
+      textContent: "hi",
+      createdAt: Date.now(),
+    });
+  });
+
+  test("seedWatchedChats populates the registry with no Central API", () => {
+    __resetStateClientForTest();
+    seedWatchedChats(["c1111111111111111111111111111111", "u2222222222222222222222222222222"]);
+    expect(isLoaded()).toBe(true);
+    const group = getWatched("c1111111111111111111111111111111");
+    expect(group?.enabled).toBe(true);
+    expect(group?.chatType).toBe("group");
+    expect(getWatched("u2222222222222222222222222222222")?.chatType).toBe("user");
+  });
+
+  test("loadWatchedChats does not clear env-seeded chats when Central API is off", async () => {
+    __resetStateClientForTest();
+    seedWatchedChats(["c9999999999999999999999999999999"]);
+    await loadWatchedChats(); // standalone → must be a no-op, not a clear
+    expect(getWatched("c9999999999999999999999999999999")?.enabled).toBe(true);
+  });
+});
+
+describe("💾 Redis session persistence", () => {
+  afterAll(async () => {
+    await closeRedis();
+  });
+
+  test("RedisSessionStorage flushes the blob to Redis; loadSessionFromRedis restores it", async () => {
+    const fake = makeFakeRedis();
+    __setRedisForTest(fake, "sess:test");
+    expect(isRedisEnabled()).toBe(true);
+
+    const storage = new RedisSessionStorage();
+    await storage.set("refreshToken", "rt-123");
+    await storage.set("e2eeKeys:1", "k1");
+    await storage.flushNow();
+
+    const raw = fake.store.get(redisKey("storage"));
+    expect(raw).toBeDefined();
+    expect(JSON.parse(raw!)).toEqual({ refreshToken: "rt-123", "e2eeKeys:1": "k1" });
+
+    persistAuthToken("tok-abc");
+    expect(fake.store.get(redisKey("auth-token"))).toBe("tok-abc");
+
+    const loaded = await loadSessionFromRedis();
+    expect(loaded.authToken).toBe("tok-abc");
+    expect(JSON.parse(loaded.storage!)).toEqual({ refreshToken: "rt-123", "e2eeKeys:1": "k1" });
+  });
+
+  test("loadSessionFromRedis returns nulls when Redis is disabled", async () => {
+    __setRedisForTest(null);
+    expect(isRedisEnabled()).toBe(false);
+    expect(await loadSessionFromRedis()).toEqual({ authToken: null, storage: null });
+  });
 });

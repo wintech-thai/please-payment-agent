@@ -1,7 +1,11 @@
-# Standalone worker — one LINE account = one container.
-# Connects to an external Central API over HTTP (set API_BASE_URL in .env).
-# For multiple accounts, run one copy per account with a distinct INSTANCE_ID
-# and a unique PROXY_URL (never share a host IP — see README anti-ban notes).
+# Standalone worker — one LINE account = one container + its Redis session store.
+# Runs fully standalone: the LINE session (auth token + E2EE storage) persists to
+# Redis so a restart restores it instead of re-logging-in (repeated fresh logins
+# get the account banned). API_BASE_URL is OPTIONAL — set it in .env only if you
+# want the Central API / dashboard control plane.
+# For multiple accounts, run one copy per account with a distinct INSTANCE_ID, a
+# unique REDIS_KEY_PREFIX, and a unique PROXY_URL (never share a host IP — see
+# README anti-ban notes).
 services:
   worker:
     build:
@@ -9,6 +13,9 @@ services:
       dockerfile: Dockerfile
     container_name: rlbotline-worker
     restart: unless-stopped
+
+    depends_on:
+      - redis
 
     # Standalone app container: exposes port 3000. No resource limits — this
     # runs on its own, not as a fleet-managed worker under a controller.
@@ -25,6 +32,9 @@ services:
     env_file:
       - .env
     environment:
+      # Point the session store at the bundled redis service (overrides .env).
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
       - RAW_OP_LOG=${RAW_OP_LOG:-0}
       - RAW_OP_LOG_DIR=/app/logs
 
@@ -33,3 +43,23 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # Session store — NO authentication (bind it to a private network only).
+  # appendonly persistence keeps the session across a full stack restart so the
+  # worker never has to re-login.
+  redis:
+    image: redis:7-alpine
+    container_name: rlbotline-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  redis-data:

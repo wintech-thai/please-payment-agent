@@ -1,21 +1,23 @@
 /**
  * rlbotline Worker — LINE Client Manager
  *
- * Manages the LINE client lifecycle. State persistence (auth token + linejs
- * FileStorage blob) lives in the Central API; the worker is stateless on disk.
+ * Manages the LINE client lifecycle. Session persistence (auth token + linejs
+ * storage blob w/ E2EE keys) lives in Redis, keyed by `REDIS_KEY_PREFIX`, so a
+ * restart restores the session instead of re-logging-in. When Redis is disabled
+ * the session is in-memory only (a fresh login each restart — see redis-client).
  *
  *  - Smart auth flow (token-first, fallback to email/password)
- *  - Custom Storage adapter that flushes JSON to PUT /state/session/storage
- *  - `update:authtoken` listener mirrors the token to /state/session/auth-token
+ *  - Redis-backed Storage adapter that flushes JSON to `{prefix}:storage`
+ *  - `update:authtoken` listener mirrors the token to `{prefix}:auth-token`
  */
 
 import { loginWithPassword, loginWithAuthToken, loginWithQR } from "@evex/linejs";
 import type { Client } from "@evex/linejs";
-import { BaseStorage, type Storage } from "@evex/linejs/storage";
+import { BaseStorage, MemoryStorage, type Storage } from "@evex/linejs/storage";
 import { logger } from "./logger.js";
 import { reportPincode, reportQr, reportReady, reportStatus } from "./webhook.js";
 import { setLoginStatus } from "./login-state.js";
-import { stateRequest } from "./state-client.js";
+import { isRedisEnabled, getRedis, redisKey } from "./redis-client.js";
 import { initSharedLimiter, gateOutbound } from "./rate-limiter.js";
 import { isGroupCommandEnabled, isFleetMember, reportOwnProfileMid } from "./database.js";
 import { getCommandContext } from "./command-context.js";
@@ -66,42 +68,38 @@ export function getKnownBotMid(): string {
 }
 
 /**
- * Load the persisted session blobs from the Central API.
+ * Load the persisted session blobs from Redis (auth token + linejs storage
+ * blob). Returns nulls when Redis is disabled or unreachable — the auth ladder
+ * then falls back to env credentials / QR. Credentials (email/password) are NOT
+ * stored here; they come only from `config` (LINE_EMAIL/LINE_PASSWORD).
  */
-async function loadSessionFromApi(): Promise<{
+export async function loadSessionFromRedis(): Promise<{
   authToken: string | null;
   storage: string | null;
-  lineEmail: string | null;
-  linePassword: string | null;
 }> {
+  const redis = getRedis();
+  if (!isRedisEnabled() || !redis) {
+    return { authToken: null, storage: null };
+  }
   try {
-    const res = await stateRequest<{
-      authToken: string | null;
-      storage: string | null;
-      lineEmail: string | null;
-      linePassword: string | null;
-    }>(
-      "/state/session",
-    );
-    if (res.authToken) logger.info("Loaded persisted auth token from Central API");
-    return {
-      authToken: res.authToken ?? null,
-      storage: res.storage ?? null,
-      lineEmail: res.lineEmail ?? null,
-      linePassword: res.linePassword ?? null,
-    };
+    const [authToken, storage] = await Promise.all([
+      redis.get(redisKey("auth-token")),
+      redis.get(redisKey("storage")),
+    ]);
+    if (authToken) logger.info("Loaded persisted auth token from Redis");
+    return { authToken: authToken ?? null, storage: storage ?? null };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    logger.warn("Failed to load session from Central API", { error: msg });
-    return { authToken: null, storage: null, lineEmail: null, linePassword: null };
+    logger.warn("Failed to load session from Redis", { error: msg });
+    return { authToken: null, storage: null };
   }
 }
 
 /**
- * In-memory linejs storage that mirrors all mutations to the Central API
- * via PUT /state/session/storage. Writes are debounced (1s) and retried.
+ * In-memory linejs storage that mirrors all mutations to Redis under
+ * `{prefix}:storage`. Writes are debounced (1s) and single-flighted.
  */
-class ApiSessionStorage extends BaseStorage {
+export class RedisSessionStorage extends BaseStorage {
   private data: Record<string, Storage["Value"]> = {};
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private flushInFlight: Promise<void> | null = null;
@@ -154,14 +152,12 @@ class ApiSessionStorage extends BaseStorage {
     }, 1000);
   }
 
-  private async flush(reqOptions?: { retries?: number; timeoutMs?: number }): Promise<void> {
+  private async flush(): Promise<void> {
     if (this.flushInFlight) return this.flushInFlight;
+    const redis = getRedis();
+    if (!redis) return; // disabled mid-run → drop silently (Memory mode never builds this)
     const snapshot = JSON.stringify(this.data);
-    this.flushInFlight = stateRequest("/state/session/storage", {
-      method: "PUT",
-      body: { storage: snapshot },
-      ...reqOptions,
-    }).then(() => undefined);
+    this.flushInFlight = redis.set(redisKey("storage"), snapshot).then(() => undefined);
     try {
       await this.flushInFlight;
     } finally {
@@ -170,13 +166,13 @@ class ApiSessionStorage extends BaseStorage {
   }
 
   /**
-   * Force the latest snapshot to the Central API right now, cancelling the
-   * debounce. Called on graceful shutdown so a session mutation from the last
-   * ~1s (a refreshed authToken, or — critically — a freshly registered E2EE
+   * Force the latest snapshot to Redis right now, cancelling the debounce.
+   * Called on graceful shutdown so a session mutation from the last ~1s (a
+   * refreshed authToken, or — critically — a freshly registered E2EE
    * `e2eeKeys:*` entry) isn't lost when the process exits. Losing it would make
    * the next boot restore a stale blob, risk a fresh QR/password login, and
    * rotate the Letter Sealing key — breaking decryption for messages sent
-   * before the rotation. Awaits any in-flight write first so the final PUT
+   * before the rotation. Awaits any in-flight write first so the final write
    * carries the newest data, never an older snapshot.
    */
   public async flushNow(): Promise<void> {
@@ -191,23 +187,28 @@ class ApiSessionStorage extends BaseStorage {
         // A failed in-flight write is retried by the final flush below.
       }
     }
-    // Bounded on the shutdown path (2 attempts, 3s each) so a slow/unreachable
-    // API can't push the flush past Docker's ~10s stop grace and starve the
-    // rest of the shutdown (closeDatabase, etc.).
-    await this.flush({ retries: 1, timeoutMs: 3000 });
+    // Bounded (3s) so a wedged Redis — Bun's offline queue holds the write
+    // forever while disconnected — can't push the flush past Docker's ~10s stop
+    // grace and starve the rest of the shutdown (closeRedis, closeDatabase).
+    await Promise.race([
+      this.flush(),
+      new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+    ]);
   }
 }
 
 /**
  * Module-level handle to the active session storage, so `flushSession()` can
  * force a final persist on shutdown without threading the instance through.
+ * Null in Memory mode (Redis disabled) — there's nothing to force-persist.
  */
-let sessionStorage: ApiSessionStorage | null = null;
+let sessionStorage: RedisSessionStorage | null = null;
 
 /**
- * Force-persist the LINE session storage (auth token + E2EE keys) to the
- * Central API immediately. Best-effort, for the graceful-shutdown path — see
- * `ApiSessionStorage.flushNow()` for why losing the last write matters.
+ * Force-persist the LINE session storage (auth token + E2EE keys) to Redis
+ * immediately. Best-effort, for the graceful-shutdown path — see
+ * `RedisSessionStorage.flushNow()` for why losing the last write matters.
+ * No-op when Redis is disabled (`sessionStorage` is null).
  */
 export async function flushSession(): Promise<void> {
   if (!sessionStorage) return;
@@ -222,15 +223,15 @@ export async function flushSession(): Promise<void> {
 }
 
 /**
- * Persist the LINE auth token to the Central API so it survives worker
- * restarts (token-first login next boot instead of a fresh QR scan).
+ * Persist the LINE auth token to Redis so it survives worker restarts
+ * (token-first login next boot instead of a fresh QR scan). No-op when Redis
+ * is disabled.
  */
-function persistAuthToken(authtoken: string): void {
-  stateRequest("/state/session/auth-token", {
-    method: "PUT",
-    body: { authToken: authtoken },
-  }).catch((error) => {
-    logger.error("Failed to persist auth token to Central API", {
+export function persistAuthToken(authtoken: string): void {
+  const redis = getRedis();
+  if (!isRedisEnabled() || !redis) return;
+  redis.set(redisKey("auth-token"), authtoken).catch((error) => {
+    logger.error("Failed to persist auth token to Redis", {
       error: error instanceof Error ? error.message : String(error),
     });
   });
@@ -244,7 +245,7 @@ function persistAuthToken(authtoken: string): void {
  */
 function setupTokenPersistence(lineClient: Client): void {
   lineClient.base.on("update:authtoken", (authtoken: string) => {
-    logger.info("Auth token updated by linejs — pushing to Central API");
+    logger.info("Auth token updated by linejs — persisting to Redis");
     persistAuthToken(authtoken);
   });
 
@@ -613,6 +614,24 @@ function buildPasswordAttempt(
 }
 
 /**
+ * Build the linejs storage backend for this login. Redis-backed when Redis is
+ * enabled (persists across restarts → no re-login → no ban); otherwise a plain
+ * in-memory store that is discarded on exit (a fresh login every restart — a
+ * loud warning is emitted from `configureRedis`). Sets the module `sessionStorage`
+ * handle to the Redis store, or null in Memory mode so `flushSession()` no-ops.
+ */
+function buildSessionStorage(initial?: Record<string, Storage["Value"]>): BaseStorage {
+  if (isRedisEnabled()) {
+    const storage = new RedisSessionStorage(initial);
+    sessionStorage = storage;
+    return storage;
+  }
+  logger.warn("Redis disabled — LINE session is in-memory only (no persistence this run)");
+  sessionStorage = null;
+  return new MemoryStorage(initial);
+}
+
+/**
  * Return the cached login device options, or build fresh ones if login hasn't
  * run yet — covers an on-demand login RPC arriving before `initLineClient` had
  * a chance to set them up (e.g. a worker that started with no credentials).
@@ -622,8 +641,7 @@ function ensureLoginDeviceOptions(
 ): { device: Device; storage: BaseStorage } {
   if (loginDeviceOptions) return loginDeviceOptions;
   initSharedLimiter(config.rateLimitCalls, config.rateLimitWindowMs);
-  const storage = new ApiSessionStorage();
-  sessionStorage = storage;
+  const storage = buildSessionStorage();
   loginDeviceOptions = { device: parseDevice(config.device), storage };
   return loginDeviceOptions;
 }
@@ -677,12 +695,10 @@ export async function startPasswordLogin(
 
 /**
  * Initialize the LINE client with the smart auth flow:
- * 1. Try persisted token from Central API / env auth token
+ * 1. Try persisted token from Redis / env auth token
  * 2. Fall back to email/password login when credentials are available, else
- *    QR-code login (triggers PIN). Credentials may come from either the Central
- *    API session (`GET /state/session`) or, for a standalone worker, the
- *    `LINE_EMAIL`/`LINE_PASSWORD` env vars (`config.lineEmail`/`linePassword`).
- *    The session value wins when both are present.
+ *    QR-code login (triggers PIN). Credentials come from the `LINE_EMAIL`/
+ *    `LINE_PASSWORD` env vars (`config.lineEmail`/`linePassword`).
  *
  * Whichever of QR / email/password is chosen is retried via
  * `attemptLoginWithRetry` — see its doc comment for the retry/backoff/park
@@ -692,7 +708,7 @@ export async function initLineClient(config: WorkerConfig): Promise<LineClientIn
   // Pace all outbound LINE API calls through one shared bucket (anti-ban).
   initSharedLimiter(config.rateLimitCalls, config.rateLimitWindowMs);
 
-  const session = await loadSessionFromApi();
+  const session = await loadSessionFromRedis();
 
   let initialStorage: Record<string, Storage["Value"]> | undefined;
   if (session.storage) {
@@ -705,18 +721,16 @@ export async function initLineClient(config: WorkerConfig): Promise<LineClientIn
     }
   }
 
-  const storage = new ApiSessionStorage(initialStorage);
-  sessionStorage = storage;
+  const storage = buildSessionStorage(initialStorage);
   const device = parseDevice(config.device);
   loginDeviceOptions = { device, storage };
   const deviceOptions = loginDeviceOptions;
 
   const authToken = session.authToken ?? config.lineAuthToken;
-  // Credentials reach the worker from the Central API session first and, when
-  // that carries none, from the env vars sent directly to this worker
+  // Credentials reach the worker from the env vars sent directly to it
   // (LINE_EMAIL/LINE_PASSWORD). Both empty → QR login below.
-  const fallbackLineEmail = session.lineEmail ?? config.lineEmail ?? null;
-  const fallbackLinePassword = session.linePassword ?? config.linePassword ?? null;
+  const fallbackLineEmail = config.lineEmail ?? null;
+  const fallbackLinePassword = config.linePassword ?? null;
 
   if (authToken) {
     try {

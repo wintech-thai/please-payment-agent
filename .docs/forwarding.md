@@ -1,6 +1,11 @@
 # Forwarding — Bank OA → onix
 
-เอกสารนี้อธิบายเส้นทางที่ข้อความจาก **LINE OA ธนาคาร** ถูกส่งต่อไปยัง **onix** (destination server)
+เอกสารนี้อธิบายเส้นทางที่ข้อความจาก **LINE OA ธนาคาร** ถูกส่งต่อไปยัง **onix** (destination server) และ
+เส้นทาง forward แบบทั่วไป (generic) ที่ทำงานได้แม้ไม่มี Central API — ดู §3b
+
+> **Central API เป็นออปชัน** ([architecture.md](./architecture.md) §1) ทั้ง bank-OA→onix (§3-4) และ
+> generic forward (§3b) ทำงานได้ **100% แบบ standalone** ไม่ต้องพึ่ง `API_BASE_URL` เลย — สิ่งที่ต้องมี Central
+> API คือ per-chat `forwardUrl`/webhook targets แบบ dynamic ที่ตั้งผ่านคำสั่งแชท/dashboard เท่านั้น
 
 ## 1. ภาพรวม pipeline
 
@@ -71,6 +76,40 @@ flowchart TD
 - รันผ่าน **shared rate limiter** (talk proxy) — ปลอดภัยที่จะรันทุก boot
 - เรียกซ้ำได้ผ่าน RPC **`ensure_bank_oa`** จาก central web
 - ถ้าอยากคุมเอง (ไม่ auto) ตั้ง `BANK_OA_HANDLES=` (ว่าง) แล้วเพิ่มด้วยคำสั่ง `!watch add <mid>` แทน
+- `ensureBankOaWatched()` เรียก `addWatched()` ([../src/core/chat-registry.ts](../src/core/chat-registry.ts))
+  ซึ่งมี standalone branch (เขียน in-memory cache ตรง ไม่ผ่าน `/state/watched-chats`) ดังนั้น bank-OA → onix
+  ทำงานได้ครบแม้ไม่มี Central API เลย — ไม่ต้องพึ่ง §3b ด้านล่าง
+
+## 3b. Standalone watch — `WATCH_CHAT_IDS` (ไม่มี Central API)
+
+เมื่อ `API_BASE_URL` ไม่ได้ตั้ง (`centralApiEnabled = false`) worker จะ **ไม่** query `/state/watched-chats`
+ตอน boot — แทนที่ด้วยการ seed **watched-chats cache ในหน่วยความจำ** ตรงจาก env `WATCH_CHAT_IDS`
+(comma-separated chat id เช่น `c1234...,c5678...`) ผ่าน `seedWatchedChats()`
+([../src/core/chat-registry.ts](../src/core/chat-registry.ts)) ที่ step 6b ของ boot
+([../src/index.ts](../src/index.ts)):
+
+```mermaid
+flowchart LR
+  cfg["config.watchChatIds<br/>(จาก WATCH_CHAT_IDS)"] --> seed["seedWatchedChats(ids)"]
+  seed --> cache["in-memory watched-chats cache<br/>enabled:true · filterType:'none'<br/>chatName = chat id (best-effort)"]
+  cache --> ic["intercept feature"]
+  ic -->|"config.webhookUrl (จาก WEBHOOK_URL)"| sink["forward sink"]
+```
+
+รายละเอียด:
+- แต่ละ id ที่ seed จะได้ `enabled: true`, `filterType: 'none'` (forward ทุกข้อความ), ไม่มี `forwardUrl`
+  ต่อ-chat, `chatType` derive จาก prefix ของ mid (`c`=group, `r`=room, `s`/`m`=square, `u`=user), และ
+  `chatName` = ตัว chat id เอง (ไม่มีการ resolve ชื่อจริงจาก LINE — best-effort)
+- เส้นทาง forward ที่เหลือเหมือนเดิมทุกอย่าง — `intercept` เช็ค watched registry + filter (§2 ข้างบน) แล้ว
+  `fanOut()` ไปยัง targets; ในโหมด standalone targets มีแค่ `config.webhookUrl` (มาจาก `WEBHOOK_URL` เท่านั้น
+  — ไม่มี default `${API_BASE_URL}/webhooks/forward` เพราะไม่มี `API_BASE_URL`) เพราะ
+  `getWebhookTargets()` (`/state/settings`) คืน `[]` เสมอเมื่อ `isCentralApiEnabled()` เป็น false
+  ([../src/core/database.ts](../src/core/database.ts))
+- **ต้องตั้ง `WEBHOOK_URL` เอง** ในโหมด standalone มิฉะนั้น `config.webhookUrl` จะเป็น `undefined` และ
+  `intercept` จะไม่มีปลายทางให้ forward เลย (ยังคง forward ไป per-chat `forwardUrl` ถ้ามีการตั้งไว้ตรงๆ ผ่าน
+  `addWatched`, แต่ `seedWatchedChats` ไม่ตั้งค่านี้ให้)
+- ใช้เสริมกับ bank-OA→onix ได้ — `WATCH_CHAT_IDS` คือทางสำหรับ **กลุ่ม/แชทอื่นที่ไม่ใช่ bank OA** ที่อยาก forward
+  ไป `WEBHOOK_URL` โดยไม่ต้องพึ่ง Central API หรือคำสั่งแชท `!watch add`
 
 ## 4. onix contract (NotifyLineMessage)
 
@@ -138,3 +177,15 @@ BANK_OA_HANDLES=@scbconnect,@krungthaiconnext,@kbanklive
 ```
 
 onix forwarding **ปิดอัตโนมัติ** ถ้าไม่ได้ตั้ง `ONIX_API_URL` + `ONIX_AGENT_ID` + `ONIX_API_KEY` ครบ
+
+### Generic forward (standalone — §3b)
+
+```dotenv
+# Chat ids to watch + forward, no Central API needed:
+WATCH_CHAT_IDS=c1234567890abcdef1234567890abcd,c98765...
+# Forward sink — required in standalone mode (no API_BASE_URL default):
+WEBHOOK_URL=https://your-webhook.example.com/ingest
+# Optional: sign forwards with HMAC-SHA256 (Standard Webhooks headers)
+WATCH_HMAC_SECRET=
+WATCH_FORWARD_TIMEOUT_MS=5000
+```

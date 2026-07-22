@@ -2,19 +2,35 @@
 
 The **LINE selfbot container** extracted from the rlbotline SaaS platform as a
 standalone, deployable service. One worker process = **one LINE account** in one
-isolated container. The worker is stateless on disk — all persistence
-(sessions, admins, blacklists, watched chats, …) lives in the **Central API**,
-which the worker reaches over HTTP (`/state/*`, `/webhooks/*`, `/ws/sync`).
+isolated container. The worker is stateless on local disk:
 
-> This repo is a copy of the worker module from the main monorepo. It talks to a
-> Central API instance (the "central web" / webhook server) you point it at via
-> `API_BASE_URL`; it does **not** bundle the API or the web dashboard.
+- The **LINE session** (auth token + linejs storage blob with E2EE keys)
+  persists to **Redis** (`REDIS_HOST`, no auth) so a restart restores it instead
+  of forcing a fresh login — that persistence is the anti-ban mechanism: a
+  fresh login rotates the LINE Letter Sealing key, and repeated fresh logins
+  from the same IP risk the account. Leave `REDIS_HOST` unset and the session
+  lives in memory only (fresh login every restart, loud warning logged).
+- Everything else (admins, blacklists, dynamic watched chats, auto-replies, …)
+  is **optional** and lives in a **Central API** — set `API_BASE_URL` to
+  connect (`/state/*`, `/webhooks/*`, `/ws/sync`); leave it unset and the
+  worker runs **fully standalone**: admin/permission/blacklist/toggle features
+  default to off (no state store to read from), while the message-forward path
+  keeps working via `WATCH_CHAT_IDS` → `WEBHOOK_URL` and bank-OA → onix.
+
+> This repo is a copy of the worker module from the main monorepo. `API_BASE_URL`
+> is **optional** — set it to connect to a Central API instance (the "central
+> web" / webhook server) for the dashboard/control-plane integration, or leave
+> it unset to run a self-contained forwarding bot with Redis as the only
+> persistence. This repo does **not** bundle the API, the web dashboard, or a
+> Redis server.
 
 **สิ่งที่ worker ทำ:**
 
 1. **ติดตาม LINE OA ธนาคาร** (`@scbconnect`, `@krungthaiconnext`, `@kbanklive`) แล้ว **forward ข้อความ
-   ไปยัง onix** (destination server) ผ่าน endpoint `NotifyLineMessage` — ดู [.docs/forwarding.md](.docs/forwarding.md)
-2. เปิดให้ **user app ล็อกอิน LINE** ทั้งแบบ **QR** และ **email/password** ผ่าน central web — ดู
+   ไปยัง onix** (destination server) ผ่าน endpoint `NotifyLineMessage` — ทำงานได้แบบ standalone เต็มรูปแบบ
+   ไม่ต้องมี Central API — ดู [.docs/forwarding.md](.docs/forwarding.md)
+2. เปิดให้ **user app ล็อกอิน LINE** ทั้งแบบ **QR** และ **email/password** — ผ่าน **inbound HTTP API**
+   (`HTTP_PORT`, ตรงกับ container เลย) หรือผ่าน **central web** (ถ้าตั้ง `API_BASE_URL`) — ดู
    [.docs/login.md](.docs/login.md)
 
 📐 **สถาปัตยกรรมทั้งหมดอยู่ใน [.docs/](.docs/)** — เริ่มที่ [.docs/architecture.md](.docs/architecture.md)
@@ -23,16 +39,25 @@ which the worker reaches over HTTP (`/state/*`, `/webhooks/*`, `/ws/sync`).
 
 The worker authenticates with LINE using the first method that has what it needs:
 
-1. **Auth token** — `LINE_AUTH_TOKEN`, or a token persisted in the Central API session.
+1. **Auth token** — a token persisted in **Redis** (`{REDIS_KEY_PREFIX}:auth-token`) wins
+   first; falls back to the `LINE_AUTH_TOKEN` env var if no Redis token exists (or Redis
+   is disabled).
 2. **Email / password** — provided **directly to the worker** via `LINE_EMAIL` +
-   `LINE_PASSWORD`, or from the Central API session. The session value wins when both exist.
+   `LINE_PASSWORD` env vars **only** — there is no session-based credential source anymore.
 3. **QR code** — used when there is no token and no email/password. The QR URL is
    printed to the worker logs (`QR login URL received — scan to log in`) and also
-   reported to the Central API, so you can scan it from either place.
+   reported to the Central API (when configured), so you can scan it from either place.
 
 A 2FA **PIN challenge** may follow email/QR login; the PIN is logged and reported
 to the Central API. If the PIN isn't completed within `PIN_WAIT_TIMEOUT_MS`, the
 worker parks itself and must be restarted for a fresh PIN.
+
+> **Session persistence (anti-ban):** set `REDIS_HOST` so the session (auth token +
+> E2EE storage) survives restarts. Without it, every restart forces a fresh login,
+> which rotates the LINE Letter Sealing (E2EE) key — messages encrypted under the old
+> key can no longer be decrypted — and repeated fresh logins from a datacenter IP risk
+> the account getting banned. Containers sharing one LINE account (e.g. redeploys) must
+> share `REDIS_KEY_PREFIX` so they restore the same session. See [.docs/login.md](.docs/login.md) §9.
 
 > **Anti-ban:** never run multiple bots behind the same host IP. Give each worker
 > a unique `PROXY_URL`, and keep loop delays intact (Tag All, sweeps, etc.).
@@ -40,16 +65,23 @@ worker parks itself and must be restarted for a fresh PIN.
 ## Requirements
 
 - **Bun** (runs the TypeScript directly — no build step). Docker image uses `oven/bun:1-slim`.
-- A reachable **central web / Central API** at `API_BASE_URL` exposing `/state/*`, `/webhooks/*`, `/ws/sync`.
-- Required env: **`API_BASE_URL`**, **`INSTANCE_TOKEN`**, **`INSTANCE_ID`**.
+- Required env: **`INSTANCE_ID`**. **`INSTANCE_TOKEN`** is required only when `API_BASE_URL` is set
+  (`loadConfig()` enforces it conditionally); a standalone deploy (no `API_BASE_URL`) doesn't need it
+  at all.
+- **`API_BASE_URL`** is **optional** — set it to connect to a Central API/dashboard exposing
+  `/state/*`, `/webhooks/*`, `/ws/sync`; leave it unset to run fully standalone.
+- **`REDIS_HOST`** is optional but recommended — without it the LINE session is in-memory only (see
+  [Login](#login) above for why that matters).
 - For onix forwarding (optional): **`ONIX_API_URL`** + **`ONIX_AGENT_ID`** + **`ONIX_API_KEY`** (see below).
+- For standalone generic forwarding (optional): **`WATCH_CHAT_IDS`** + **`WEBHOOK_URL`**.
 - A LINE account to log in as — via token / email+password / QR (see [Login](#login)).
 
 ## Quick start
 
 ```bash
-cp .env.example .env      # fill in API_BASE_URL, INSTANCE_TOKEN, INSTANCE_ID,
-                          # onix vars (ONIX_API_URL/ONIX_AGENT_ID/ONIX_API_KEY),
+cp .env.example .env      # fill in INSTANCE_TOKEN, INSTANCE_ID, REDIS_HOST (recommended),
+                          # optionally API_BASE_URL (Central API) or WATCH_CHAT_IDS + WEBHOOK_URL
+                          # (standalone forwarding), onix vars (ONIX_API_URL/ONIX_AGENT_ID/ONIX_API_KEY),
                           # and either LINE_EMAIL/LINE_PASSWORD or nothing (QR)
 bun install
 bun run dev               # or: bun run start
@@ -58,7 +90,10 @@ bun run dev               # or: bun run start
 ### Docker
 
 Runs as a **standalone app container** — maps **port 3000** (the inbound HTTP API) and sets
-**no resource limits** (it runs on its own, not as a fleet-managed worker).
+**no resource limits** (it runs on its own, not as a fleet-managed worker). `docker-compose.yml`
+**bundles a `redis` service** (redis:7-alpine, no auth, `--appendonly yes` + a `redis-data` volume so
+the session survives a full-stack restart) and wires `REDIS_HOST=redis` into the worker automatically —
+no external Redis needed. Point `REDIS_HOST` elsewhere (via `.env`) only if you prefer a managed Redis.
 
 ```bash
 docker compose up --build -d
@@ -73,11 +108,16 @@ for the full list. Key ones:
 
 | Var | Purpose |
 | --- | --- |
-| `API_BASE_URL` | Central API base URL (state, webhooks, sync hub) |
-| `INSTANCE_TOKEN` | Per-bot bearer token for `/state/*` (secret) |
-| `INSTANCE_ID` | Unique id for this bot instance |
-| `LINE_EMAIL` / `LINE_PASSWORD` | Standalone email/password login (optional) |
-| `LINE_AUTH_TOKEN` | Optional pre-issued auth token |
+| `API_BASE_URL` | Central API base URL (state, webhooks, sync hub) — **optional**; unset = standalone mode |
+| `INSTANCE_TOKEN` | Per-bot bearer token for `/state/*` (secret) — required only when `API_BASE_URL` is set; not needed standalone |
+| `INSTANCE_ID` | Unique id for this bot instance; also the default `REDIS_KEY_PREFIX` suffix (`rlbotline:${INSTANCE_ID}`) |
+| `REDIS_HOST` | Redis host — enables session persistence (auth token + E2EE storage) across restarts; unset = in-memory session only (loud warning logged) |
+| `REDIS_PORT` | Redis port (default `6379`) |
+| `REDIS_KEY_PREFIX` | Namespace for session keys (`{prefix}:auth-token`, `{prefix}:storage`); default `rlbotline:${INSTANCE_ID}` — containers sharing one LINE account MUST share this |
+| `WATCH_CHAT_IDS` | Comma-separated chat ids to watch + forward to `WEBHOOK_URL` in standalone mode (no Central API); seeded into the registry at boot |
+| `WEBHOOK_URL` | Generic forward sink; defaults to `${API_BASE_URL}/webhooks/forward` when `API_BASE_URL` is set, otherwise `undefined` — set explicitly for standalone forwarding |
+| `LINE_EMAIL` / `LINE_PASSWORD` | Standalone email/password login sent directly to the worker (optional) — the only credential source now (no session-based fallback) |
+| `LINE_AUTH_TOKEN` | Optional pre-issued auth token — fallback when no token is persisted in Redis |
 | `ONIX_API_URL` | onix base URL — enables onix forwarding when set (with agent id + key) |
 | `ONIX_AGENT_ID` | onix agent UUID that receives `NotifyLineMessage` |
 | `ONIX_API_USER` / `ONIX_API_KEY` | Basic auth for onix (default user `api`; key is the password) |
@@ -107,13 +147,22 @@ of auto-starting QR at boot. Full flow: [.docs/login.md](.docs/login.md).
 
 Watched **bank OA** messages are POSTed to onix's `NotifyLineMessage` with Basic auth
 (`api:<key>`). onix forwarding is **off** unless `ONIX_API_URL` + `ONIX_AGENT_ID` + `ONIX_API_KEY`
-are all set. Full contract (endpoint, headers, payload mapping): [.docs/forwarding.md](.docs/forwarding.md).
+are all set. This path works **fully standalone** — it never needs `API_BASE_URL`. Full contract
+(endpoint, headers, payload mapping): [.docs/forwarding.md](.docs/forwarding.md).
 
-### Login via the central web
+### Standalone generic forwarding
 
-The central web triggers login over the sync hub (RPC `login_qr` / `login_password`); the worker
-reports the QR URL / PIN / result back as webhook events (`qrcode`, `pincode`, `ready`, `error`).
-Flow + event payloads: [.docs/login.md](.docs/login.md).
+With no Central API, set `WATCH_CHAT_IDS` (comma-separated chat ids) to watch arbitrary
+groups/rooms and forward every non-command message to `WEBHOOK_URL`. Chats are seeded into the
+in-memory watched-chats registry at boot — no `/state/watched-chats` calls involved. Details:
+[.docs/forwarding.md](.docs/forwarding.md) §3b.
+
+### Login via the central web (optional)
+
+When `API_BASE_URL` is set, the central web can trigger login over the sync hub (RPC `login_qr` /
+`login_password`); the worker reports the QR URL / PIN / result back as webhook events (`qrcode`,
+`pincode`, `ready`, `error`). Without a Central API, use the [HTTP API](#http-api-standalone-login)
+above instead. Flow + event payloads: [.docs/login.md](.docs/login.md).
 
 ## Scripts
 
@@ -128,12 +177,13 @@ bun run verify      # typecheck + test
 ## Layout
 
 ```
-.docs/        architecture, forwarding (bank OA → onix), login flow
+.docs/        architecture, forwarding (bank OA → onix + standalone), login flow
 src/
-  core/       LINE client, event router, state client, sync, webhook, forwarder, onix-client, http-server, login-state, rate limiter, …
+  core/       LINE client, redis-client (session store), event router, state client, sync, webhook,
+              forwarder, onix-client, http-server, login-state, rate limiter, …
   features/   anti-unsend, tagall, welcome/goodbye, sub-admin, anti-kick/link/spam, sync, watch, intercept, …
   index.ts    worker bootstrap + lifecycle + sync-hub RPC handlers (incl. login_qr/login_password)
-  types.ts    shared types (WorkerConfig, OnixConfig, records, LINE op types)
+  types.ts    shared types (WorkerConfig, OnixConfig, RedisConfig, records, LINE op types)
 scripts/
   worker-entrypoint.sh   Docker entrypoint (optional INSTANCE_TOKEN rotation)
   test-units.test.ts     unit + login-retry tests
@@ -147,4 +197,6 @@ scripts/
 
 - **Runtime:** Bun (TypeScript, run directly — no build step)
 - **LINE library:** `@evex/linejs`
-- **State:** none locally — HTTP to the Central API
+- **State:** LINE session → **Redis** (`REDIS_HOST`, optional but recommended — no auth); everything
+  else → **Central API** over HTTP (optional, `API_BASE_URL`) or safe in-memory defaults (default-off)
+  when running fully standalone

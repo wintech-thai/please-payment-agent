@@ -16,6 +16,19 @@ let bearerToken: string | null = null;
 const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_RETRIES = 3;
 
+/**
+ * Thrown by `stateRequest` when the Central API is disabled (standalone mode,
+ * `API_BASE_URL` unset → `configureStateClient` was never called). Callers in
+ * `database.ts` short-circuit on `isCentralApiEnabled()` before reaching here,
+ * so this is a typed backstop rather than an expected control-flow path.
+ */
+export class CentralApiDisabledError extends Error {
+  constructor() {
+    super("Central API is disabled (API_BASE_URL unset)");
+    this.name = "CentralApiDisabledError";
+  }
+}
+
 export interface StateClientOptions {
   apiBaseUrl: string;
   instanceToken: string;
@@ -26,9 +39,27 @@ export function configureStateClient(options: StateClientOptions): void {
   bearerToken = options.instanceToken;
 }
 
+/**
+ * True when the Central API is configured (i.e. `configureStateClient` ran).
+ * `database.ts` helpers gate on this to degrade to safe defaults when the worker
+ * runs standalone, instead of throwing on every call.
+ */
+export function isCentralApiEnabled(): boolean {
+  return baseUrl !== null;
+}
+
+/**
+ * Test seam: reset the client to its unconfigured (standalone) state so
+ * `isCentralApiEnabled()` returns false. Only for unit tests.
+ */
+export function __resetStateClientForTest(): void {
+  baseUrl = null;
+  bearerToken = null;
+}
+
 function ensureConfigured(): { base: string; token: string } {
   if (!baseUrl || !bearerToken) {
-    throw new Error("state-client not configured — call configureStateClient() first");
+    throw new CentralApiDisabledError();
   }
   return { base: baseUrl, token: bearerToken };
 }

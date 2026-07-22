@@ -5,7 +5,7 @@
  * Fails fast with clear error messages if required vars are missing.
  */
 
-import type { WorkerConfig, LogLevel, OnixConfig } from "../types.js";
+import type { WorkerConfig, LogLevel, OnixConfig, RedisConfig } from "../types.js";
 
 const LOG_LEVELS: LogLevel[] = ["debug", "info", "warn", "error"];
 
@@ -55,7 +55,29 @@ export function loadConfig(): WorkerConfig {
     );
   }
 
-  const apiBaseUrl = requireEnv("API_BASE_URL").replace(/\/+$/, "");
+  // Central API is OPTIONAL. When unset the worker runs standalone: session
+  // persists to Redis, watched chats come from WATCH_CHAT_IDS, and every
+  // /state/* /webhooks/* /ws/sync interaction is skipped (see centralApiEnabled).
+  const apiBaseUrl = optionalTrimmedEnv("API_BASE_URL")?.replace(/\/+$/, "");
+  const centralApiEnabled = Boolean(apiBaseUrl);
+
+  const instanceId = requireEnv("INSTANCE_ID");
+
+  // Redis session store (no auth). Enabled only when REDIS_HOST is set; the key
+  // prefix defaults per-instance so two bots sharing one Redis don't collide.
+  const redisHost = optionalTrimmedEnv("REDIS_HOST");
+  const redis: RedisConfig = {
+    enabled: Boolean(redisHost),
+    host: redisHost ?? "",
+    port: optionalInt("REDIS_PORT", 6379),
+    keyPrefix: optionalEnv("REDIS_KEY_PREFIX", `rlbotline:${instanceId}`),
+  };
+
+  // Chats to watch + forward in standalone mode (comma-separated, like BANK_OA_HANDLES).
+  const watchChatIds = optionalEnv("WATCH_CHAT_IDS", "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter((id) => id.length > 0);
 
   // onix (destination server) forward target. Enabled only when the URL, agent
   // id and key are all present, so an unconfigured worker simply skips onix.
@@ -87,19 +109,22 @@ export function loadConfig(): WorkerConfig {
 
   const config: WorkerConfig = {
     lineAuthToken: optionalTrimmedEnv("LINE_AUTH_TOKEN"),
-    // Standalone login credentials sent directly to the worker via env. Used as
-    // a fallback when the Central API session (GET /state/session) carries no
-    // email/password, so this worker can log in with email/password without a
-    // dashboard round-trip. Leave both empty to fall back to QR login.
+    // Login credentials sent directly to the worker via env. Used only when
+    // there's no persisted auth token in Redis. Leave both empty for QR login.
     lineEmail: optionalTrimmedEnv("LINE_EMAIL"),
     linePassword: optionalTrimmedEnv("LINE_PASSWORD"),
-    // Optional: defaults to the control-plane forward sink. Additional user
-    // webhook targets (worker_settings.webhookTargets) are fanned out separately.
-    webhookUrl: optionalTrimmedEnv("WEBHOOK_URL") ?? `${apiBaseUrl}/webhooks/forward`,
+    // Explicit WEBHOOK_URL wins; else the Central API forward sink when central
+    // is on; else undefined (standalone with only per-chat / target URLs).
+    webhookUrl: optionalTrimmedEnv("WEBHOOK_URL") ?? (apiBaseUrl ? `${apiBaseUrl}/webhooks/forward` : undefined),
     apiBaseUrl,
-    instanceToken: requireEnv("INSTANCE_TOKEN"),
+    centralApiEnabled,
+    redis,
+    watchChatIds,
+    // Only the /state/* bearer — required when the Central API is on, ignored
+    // standalone (a throwaway value is fine, so don't force one).
+    instanceToken: centralApiEnabled ? requireEnv("INSTANCE_TOKEN") : optionalEnv("INSTANCE_TOKEN", ""),
     commandPrefix: optionalEnv("COMMAND_PREFIX", "!"),
-    instanceId: requireEnv("INSTANCE_ID"),
+    instanceId,
     botName: optionalEnv("BOT_NAME", "rlbotline"),
     device: optionalEnv("LINE_DEVICE", "IOSIPAD"),
     rateLimitCalls: optionalInt("RATE_LIMIT_CALLS", 5),

@@ -269,20 +269,62 @@ export interface OnixConfig {
   timeoutMs: number;
 }
 
+/**
+ * Redis connection used to persist the LINE session (auth token + linejs storage
+ * blob w/ E2EE keys) so a restart restores the session instead of re-logging-in
+ * (a fresh login rotates the device/E2EE key and repeated logins get the LINE
+ * account banned). No authentication — `REDIS_HOST`/`REDIS_PORT` only. Disabled
+ * when `REDIS_HOST` is unset (session then lives in memory for that run only).
+ */
+export interface RedisConfig {
+  /** True when REDIS_HOST is present. */
+  enabled: boolean;
+  /** Redis host (e.g. "localhost" or the k8s service name). */
+  host: string;
+  /** Redis port — defaults to 6379. */
+  port: number;
+  /**
+   * Namespace prefix for this account's session keys (`{prefix}:auth-token`,
+   * `{prefix}:storage`). Containers sharing one LINE account MUST share this
+   * prefix so they restore the same session instead of each logging in fresh.
+   */
+  keyPrefix: string;
+}
+
 export interface WorkerConfig {
   lineAuthToken: string | undefined;
   /**
-   * LINE account email for standalone email/password login, sent to the worker
-   * via the `LINE_EMAIL` env var. Fallback only — a credential from the Central
-   * API session (GET /state/session) takes priority. `undefined` → QR login.
+   * LINE account email for email/password login, sent to the worker via the
+   * `LINE_EMAIL` env var. Used only when there's no persisted auth token in
+   * Redis. `undefined` (with no password) → QR login.
    */
   lineEmail: string | undefined;
   /** LINE account password for standalone login (`LINE_PASSWORD` env var). See `lineEmail`. */
   linePassword: string | undefined;
-  /** Internal Central API forward endpoint; user-managed webhook targets are loaded from state settings. */
-  webhookUrl: string;
-  /** Central API base URL (e.g. http://api:3000). Worker reads/writes all state through here. */
-  apiBaseUrl: string;
+  /**
+   * Message-forward sink (the generic watched-chat fan-out target). Defaults to
+   * the Central API `/webhooks/forward` when `apiBaseUrl` is set; in standalone
+   * mode it comes solely from `WEBHOOK_URL`. `undefined` → no default sink (only
+   * per-chat forward URLs / webhook targets apply).
+   */
+  webhookUrl: string | undefined;
+  /**
+   * Central API base URL (e.g. http://api:3000). OPTIONAL — when unset the worker
+   * runs fully standalone (session → Redis, watched chats → `WATCH_CHAT_IDS`) and
+   * every `/state/*` / `/webhooks/*` / `/ws/sync` interaction is skipped. See
+   * `centralApiEnabled`.
+   */
+  apiBaseUrl: string | undefined;
+  /** True when `apiBaseUrl` is set — gates every Central API interaction. */
+  centralApiEnabled: boolean;
+  /** Redis session-persistence target. Disabled when `REDIS_HOST` is unset. */
+  redis: RedisConfig;
+  /**
+   * Chat IDs to watch + forward in standalone mode (`WATCH_CHAT_IDS`, comma-
+   * separated). Seeded straight into the in-memory watched-chats registry at boot
+   * so forwarding works with no Central API. Empty when unset.
+   */
+  watchChatIds: string[];
   /** Per-bot bearer token used to authenticate to /state/*. */
   instanceToken: string;
   commandPrefix: string;
