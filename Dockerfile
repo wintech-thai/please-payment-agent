@@ -35,16 +35,12 @@ COPY tsconfig.json ./
 COPY src/ ./src/
 COPY scripts/worker-entrypoint.sh ./scripts/worker-entrypoint.sh
 
-# Create data directory for auth tokens and storage.json
-RUN mkdir -p /data && chown -R bun:bun /data && \
-    chown -R bun:bun /app
+# Session (auth token + E2EE storage) persists to Redis, and any control-plane
+# state to the optional Central API — nothing is written to disk here.
+RUN chown -R bun:bun /app
 
-# Data volume for persistent state across container restarts
-VOLUME /data
-
-# Environment defaults (overridden at runtime by Central API)
+# Environment defaults (override at runtime via env / .env)
 ENV NODE_ENV=production
-ENV DATA_DIR=/data
 ENV LOG_LEVEL=info
 ENV COMMAND_PREFIX=!
 ENV LINE_DEVICE=IOSIPAD

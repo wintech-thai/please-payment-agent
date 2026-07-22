@@ -14,10 +14,14 @@
 
 ## 1. Boot behavior (standalone)
 
-ตอน boot `initLineClient()` ลอง login ตามลำดับ token → email/password → QR **ยกเว้น** กรณีไม่มี token และ
-ไม่มี credential **และ** เปิด HTTP API ไว้ (`HTTP_PORT>0`) — worker จะ **ไม่** auto-QR แต่รอให้ app ยิง
-`POST /login/*` เข้ามาแทน (`initLineClient` คืน `onboarding-required`, bootstrap รอ `waitForLoginReady()`
-แล้วค่อยขึ้นระบบต่อเมื่อ login สำเร็จ) → app เป็นคนเลือกวิธี login เอง
+ก่อนเข้า auth ladder worker จะ `configureRedis()` แล้ว `loadSessionFromRedis()` โหลด auth token +
+storage blob ที่ persist ไว้จาก run ก่อนหน้า (ถ้ามี `REDIS_HOST`) — ดูรายละเอียดเต็มใน §9
+
+จากนั้นตอน boot `initLineClient()` ลอง login ตามลำดับ token (Redis ก่อน, ตกไป `LINE_AUTH_TOKEN`) →
+email/password (env เท่านั้น) → QR **ยกเว้น** กรณีไม่มี token และไม่มี credential **และ** เปิด HTTP API ไว้
+(`HTTP_PORT>0`) — worker จะ **ไม่** auto-QR แต่รอให้ app ยิง `POST /login/*` เข้ามาแทน (`initLineClient` คืน
+`onboarding-required`, bootstrap รอ `waitForLoginReady()` แล้วค่อยขึ้นระบบต่อเมื่อ login สำเร็จ) → app เป็นคน
+เลือกวิธี login เอง
 
 ## 2. HTTP API (บน HTTP_PORT, default 3000)
 
@@ -131,8 +135,10 @@ body: `{ instanceId, event, data, timestamp }` ([../src/core/webhook.ts](../src/
 
 นอกจาก on-demand login แล้ว ตอน boot `initLineClient()` ยังลอง login อัตโนมัติตามลำดับ:
 
-1. **Auth token** — `LINE_AUTH_TOKEN` หรือ token ที่ persist ไว้ใน session ของ central web
-2. **Email/password** — จาก session หรือ env `LINE_EMAIL`/`LINE_PASSWORD` (session ชนะ)
+1. **Auth token** — token ที่ persist ไว้ใน **Redis** (`{REDIS_KEY_PREFIX}:auth-token`) ชนะก่อนเสมอ ถ้าไม่มี
+   (ไม่ได้ตั้ง `REDIS_HOST`, หรือยังไม่เคย login มาก่อน) จะ fallback ไปที่ env `LINE_AUTH_TOKEN`
+2. **Email/password** — จาก env `LINE_EMAIL`/`LINE_PASSWORD` **เท่านั้น** — ไม่มี credential source จาก
+   Central API/session อีกต่อไป (ตัด `/state/session/*` ออกทั้งหมด)
 3. **QR** — เมื่อไม่มี token และไม่มี email/password **และ** ปิด HTTP API (`HTTP_PORT=0`)
 
 > เมื่อเปิด HTTP API ไว้ (default `HTTP_PORT=3000`) กรณีข้อ 3 จะ **ไม่** auto-QR แต่รอ `POST /login/*`
@@ -149,5 +155,18 @@ body: `{ instanceId, event, data, timestamp }` ([../src/core/webhook.ts](../src/
 
 - email/password ที่ส่งผ่าน RPC `login_password` **ไม่ถูก log เป็น plaintext** (log เฉพาะ PIN ตามดีไซน์เดิม
   เพื่อให้ผู้ปฏิบัติงานเห็นจาก log ได้)
-- session (auth token + E2EE keys) ถูก mirror ไปเก็บที่ central web (`PUT /state/session/*`) ไม่เก็บลง disk
+- **session persistence เปลี่ยนไปจากเดิมทั้งหมด:** session (auth token + linejs storage blob พร้อม E2EE
+  keys) persist ไปที่ **Redis เท่านั้น** — `{REDIS_KEY_PREFIX}:auth-token` (ตั้งทันทีที่ login/refresh ผ่าน
+  event `update:authtoken`) และ `{REDIS_KEY_PREFIX}:storage` (debounce 1s, flush ทันทีตอน graceful shutdown
+  ผ่าน `flushSession()`) — **ไม่ใช่ Central API อีกต่อไป**; `PUT /state/session/*` ถูกลบออกจากโค้ดแล้ว
+  ([../src/core/redis-client.ts](../src/core/redis-client.ts), [../src/core/line-client.ts](../src/core/line-client.ts))
+  - ไม่มี Redis auth — ต่อด้วย `REDIS_HOST`/`REDIS_PORT` เฉยๆ (`redis://host:port`)
+  - ถ้า **ไม่ตั้ง** `REDIS_HOST`: session อยู่ใน **หน่วยความจำเท่านั้น** สำหรับ run นั้น (มี warning log ดังๆ ตอน
+    boot) — restart ทุกครั้งต้อง login ใหม่ ซึ่งจะหมุนกุญแจ Letter Sealing (E2EE) ใหม่ทุกครั้ง (ข้อความเก่าถอด
+    ไม่ได้) และ login ซ้ำถี่ๆ จาก IP เดิมมีความเสี่ยงโดนแบนบัญชี — **`REDIS_HOST` คือกลไก anti-ban หลักของ
+    session persistence**
+  - container ที่ใช้ LINE account เดียวกัน (เช่น restart/redeploy) **ต้องตั้ง `REDIS_KEY_PREFIX` ให้ตรงกัน**
+    เพื่อ restore session เดิมแทนที่จะ login ใหม่ทุกครั้ง (default: `rlbotline:${INSTANCE_ID}`)
+  - credentials (`LINE_EMAIL`/`LINE_PASSWORD`) มาจาก env เท่านั้น — Redis เก็บแค่ auth token/storage blob
+    ไม่เก็บ credential ดิบ
 - 1 worker = 1 LINE account — อย่ารันหลายบัญชีหลัง IP เดียว (anti-ban) ให้ตั้ง `PROXY_URL` แยกต่อ instance

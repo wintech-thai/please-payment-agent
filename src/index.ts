@@ -66,9 +66,10 @@ import { syncClient } from "./core/sync-client.js";
 // Phase 5 (Watched Chats)
 import { createWatchFeature } from "./features/watch.js";
 import { createInterceptFeature } from "./features/intercept.js";
-import { loadWatchedChats, getWatched, addWatched } from "./core/chat-registry.js";
+import { loadWatchedChats, seedWatchedChats, getWatched, addWatched } from "./core/chat-registry.js";
 import { configureForwarder } from "./core/forwarder.js";
 import { configureOnix } from "./core/onix-client.js";
+import { configureRedis, closeRedis } from "./core/redis-client.js";
 import { startHttpServer, stopHttpServer } from "./core/http-server.js";
 import { waitForLoginReady } from "./core/login-state.js";
 import { listAllChats, listGroupMembers } from "./core/chat-lister.js";
@@ -175,29 +176,40 @@ async function main(): Promise<void> {
     botName: config.botName,
     device: config.device,
     commandPrefix: config.commandPrefix,
-    apiBaseUrl: config.apiBaseUrl,
+    apiBaseUrl: config.apiBaseUrl ?? "(standalone — no Central API)",
+    redis: config.redis.enabled,
   });
 
-  // ── Step 3: Configure State Client + verify Central API reachable ──
-  configureStateClient({
-    apiBaseUrl: config.apiBaseUrl,
-    instanceToken: config.instanceToken,
-  });
-  await initDatabase();
+  // When false, the worker runs fully standalone: session → Redis, watched chats
+  // → WATCH_CHAT_IDS, and every /state/* /webhooks/* /ws/sync interaction is skipped.
+  const central = config.centralApiEnabled;
 
-  // Start periodic message pruning
-  pruneTimer = setInterval(() => {
-    pruneMessages(config.messageRetentionHours).catch((error) => {
-      const msg = error instanceof Error ? error.message : String(error);
-      logger.error("Message prune failed", { error: msg });
+  // ── Step 2b: Configure Redis session store (persists session across restarts) ──
+  configureRedis(config.redis);
+
+  // ── Step 3: Configure State Client + verify Central API reachable (central only) ──
+  if (central) {
+    configureStateClient({
+      apiBaseUrl: config.apiBaseUrl!,
+      instanceToken: config.instanceToken,
     });
-  }, PRUNE_INTERVAL_MS);
+    await initDatabase();
+
+    // Start periodic message pruning
+    pruneTimer = setInterval(() => {
+      pruneMessages(config.messageRetentionHours).catch((error) => {
+        const msg = error instanceof Error ? error.message : String(error);
+        logger.error("Message prune failed", { error: msg });
+      });
+    }, PRUNE_INTERVAL_MS);
+  }
 
   // ── Step 4: Initialize Webhook ──
   // Status events (heartbeat/ready/error/...) always go to the control-plane
   // /webhooks/worker endpoint. The message-forward sink is config.webhookUrl
   // (defaults to /webhooks/forward), used by the intercept fan-out.
-  configureWebhook(`${config.apiBaseUrl}/webhooks/worker`, config.instanceId);
+  // Empty URL in standalone mode ⇒ sendWebhookEvent no-ops cleanly (no status plane).
+  configureWebhook(central ? `${config.apiBaseUrl}/webhooks/worker` : "", config.instanceId);
 
   // ── Step 4b: Initialize Forwarder (HMAC + timeout) ──
   configureForwarder({
@@ -243,16 +255,21 @@ async function main(): Promise<void> {
   await bootstrapOwner();
 
   // ── Step 6b: Load Watched Chats Cache ──
-  await loadWatchedChats();
-  // Periodically refresh the watched-chats cache so UI-side tracking changes
-  // take effect even if the reload RPC was missed (e.g. transient WS drop).
-  setInterval(() => {
-    loadWatchedChats().catch((err) => {
-      logger.warn("Periodic watched-chats reload failed", {
-        error: err instanceof Error ? err.message : String(err),
+  if (central) {
+    await loadWatchedChats();
+    // Periodically refresh the watched-chats cache so UI-side tracking changes
+    // take effect even if the reload RPC was missed (e.g. transient WS drop).
+    setInterval(() => {
+      loadWatchedChats().catch((err) => {
+        logger.warn("Periodic watched-chats reload failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
       });
-    });
-  }, 30_000);
+    }, 30_000);
+  } else {
+    // Standalone: seed the registry from WATCH_CHAT_IDS (no Central API).
+    seedWatchedChats(config.watchChatIds);
+  }
 
   // ── Step 6c: Follow + watch bank OAs (best-effort, non-blocking) ──
   // Idempotent — skips OAs already watched — and paced by the shared rate
@@ -338,11 +355,15 @@ async function main(): Promise<void> {
   // ── Step 8: Initialize Event Router ──
   initEventRouter(config);
 
-  // ── Step 9: Start Heartbeat & Sync ──
-  startHeartbeat();
-  syncClient.connect();
+  // ── Step 9: Start Heartbeat & Sync (central only — no hub/status plane standalone) ──
+  if (central) {
+    startHeartbeat();
+    syncClient.connect();
+  }
 
   // ── Step 9b: Register RPC handlers (API → Worker) ──
+  // Registered unconditionally (pure in-memory Map inserts); they only ever fire
+  // when the Sync Hub is connected, which is gated on `central` above.
   syncClient.onRpc("discover_chats", async () => {
     const client = getClient();
     const chats = await listAllChats(client);
@@ -642,28 +663,30 @@ async function main(): Promise<void> {
     };
   });
 
-  // ── Step 9c: Initial chat discovery (best-effort, non-blocking) ──
-  (async () => {
-    try {
-      const client = getClient();
-      const chats = await listAllChats(client);
-      const visibleChats = chats.filter((c) => c.type !== "user");
-      await stateRequest("/state/chats", {
-        method: "POST",
-        body: { chats: visibleChats.map((c) => ({
-          chatId: c.id,
-          name: c.name,
-          chatType: c.type,
-          attributes: c.attributes ?? null,
-          addedVia: "discovered",
-        })) },
-      });
-      logger.info(`Initial chat discovery: ${visibleChats.length} chats pushed to API (user chats excluded)`);
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      logger.warn(`Initial chat discovery failed: ${msg}`);
-    }
-  })();
+  // ── Step 9c: Initial chat discovery (central only — pushes to /state/chats) ──
+  if (central) {
+    (async () => {
+      try {
+        const client = getClient();
+        const chats = await listAllChats(client);
+        const visibleChats = chats.filter((c) => c.type !== "user");
+        await stateRequest("/state/chats", {
+          method: "POST",
+          body: { chats: visibleChats.map((c) => ({
+            chatId: c.id,
+            name: c.name,
+            chatType: c.type,
+            attributes: c.attributes ?? null,
+            addedVia: "discovered",
+          })) },
+        });
+        logger.info(`Initial chat discovery: ${visibleChats.length} chats pushed to API (user chats excluded)`);
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        logger.warn(`Initial chat discovery failed: ${msg}`);
+      }
+    })();
+  }
 
   // ── Step 10: Start Listening ──
   logger.info("Starting event listener...");
@@ -714,6 +737,9 @@ async function shutdown(signal: string): Promise<void> {
   // making the next boot restore a stale blob, risk a fresh login, and rotate
   // the Letter Sealing key (which breaks decryption of pre-rotation messages).
   await flushSession();
+
+  // Close the Redis connection now that the final session flush is done.
+  await closeRedis();
 
   // Disconnect LINE client
   disconnectClient();

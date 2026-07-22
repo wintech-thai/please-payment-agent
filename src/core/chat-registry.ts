@@ -10,6 +10,7 @@
  */
 
 import { logger } from "./logger.js";
+import { isCentralApiEnabled } from "./state-client.js";
 import {
   getAllWatchedChats,
   upsertWatchedChat,
@@ -19,6 +20,28 @@ import {
   setWatchedChatFilter,
 } from "./database.js";
 import type { WatchedChatRecord, ChatType } from "../types.js";
+
+/**
+ * Chat type from a mid prefix (c=group, r=room, s/m=square, u=user). Duplicated
+ * from `features/watch.ts` on purpose — this core module must not import a
+ * feature (that would be a dependency cycle).
+ */
+function typeFromMid(chatId: string): ChatType {
+  const p = chatId[0];
+  if (p === "c") return "group";
+  if (p === "r") return "room";
+  if (p === "s" || p === "m") return "square";
+  if (p === "u") return "user";
+  return "unknown";
+}
+
+/** Write a watched-chat record straight into the in-memory cache (no state store). */
+function setLocalWatched(rec: WatchedChatRecord): void {
+  cache.set(rec.chatId, rec);
+  if (rec.filterType === "regex") {
+    compileRegex(rec.chatId, rec.filterPattern);
+  }
+}
 
 /** chatId → record */
 const cache: Map<string, WatchedChatRecord> = new Map();
@@ -43,6 +66,13 @@ function compileRegex(chatId: string, pattern: string): void {
 
 /** Load all watched chats from DB into memory. */
 export async function loadWatchedChats(): Promise<void> {
+  // Standalone (no Central API): there is nothing to load, and clearing here
+  // would wipe the env-seeded chats. Mark loaded so intercept's isLoaded() gate
+  // opens and leave the seeds in place.
+  if (!isCentralApiEnabled()) {
+    loaded = true;
+    return;
+  }
   const rows = await getAllWatchedChats();
   cache.clear();
   regexCache.clear();
@@ -54,6 +84,32 @@ export async function loadWatchedChats(): Promise<void> {
   }
   loaded = true;
   logger.info("Watched chats loaded", { total: cache.size });
+}
+
+/**
+ * Seed watched chats from env (`WATCH_CHAT_IDS`) with NO Central API — writes
+ * the in-memory cache directly and marks the registry loaded so intercept's
+ * `isLoaded()` gate opens. Each chat is enabled with no filter; type is derived
+ * from the id prefix and the name defaults to the id (best-effort standalone).
+ */
+export function seedWatchedChats(ids: string[], addedBy = "env"): void {
+  const addedAt = Date.now();
+  for (const id of ids) {
+    if (!id || cache.has(id)) continue;
+    setLocalWatched({
+      chatId: id,
+      chatName: id,
+      chatType: typeFromMid(id),
+      forwardUrl: null,
+      enabled: true,
+      addedBy,
+      addedAt,
+      filterType: "none",
+      filterPattern: "",
+    });
+  }
+  loaded = true;
+  logger.info("Watched chats seeded from env", { total: cache.size, seeded: ids.length });
 }
 
 /** Check if a chat is being watched (and enabled). */
@@ -95,6 +151,23 @@ export async function addWatched(rec: {
   filterType?: string;
   filterPattern?: string;
 }): Promise<void> {
+  // Standalone: upsertWatchedChat is a no-op and loadWatchedChats won't reload,
+  // so write the cache directly (keeps ensureBankOaWatched working standalone).
+  if (!isCentralApiEnabled()) {
+    setLocalWatched({
+      chatId: rec.chatId,
+      chatName: rec.chatName,
+      chatType: rec.chatType,
+      forwardUrl: rec.forwardUrl ?? null,
+      enabled: rec.enabled ?? true,
+      addedBy: rec.addedBy,
+      addedAt: Date.now(),
+      filterType: (rec.filterType as WatchedChatRecord["filterType"]) ?? "none",
+      filterPattern: rec.filterPattern ?? "",
+    });
+    loaded = true;
+    return;
+  }
   await upsertWatchedChat(rec);
   await loadWatchedChats();
 }

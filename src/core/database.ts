@@ -11,7 +11,7 @@
  */
 
 import { logger } from "./logger.js";
-import { stateRequest, pingStateApi } from "./state-client.js";
+import { stateRequest, pingStateApi, isCentralApiEnabled } from "./state-client.js";
 import {
   cacheGet,
   cacheSet,
@@ -50,6 +50,7 @@ export async function closeDatabase(): Promise<void> {
 // ─── Messages ─────────────────────────────────────────────────────
 
 export async function cacheMessage(msg: CachedMessage): Promise<void> {
+  if (!isCentralApiEnabled()) return; // standalone: no state store to write to
   await stateRequest("/state/messages", {
     method: "POST",
     body: {
@@ -68,6 +69,7 @@ export async function cacheMessage(msg: CachedMessage): Promise<void> {
 }
 
 export async function getCachedMessage(messageId: string): Promise<CachedMessage | null> {
+  if (!isCentralApiEnabled()) return null;
   return getOrFetch(`messages:${messageId}`, async () => {
     const row = await stateRequest<CachedMessage | null>(
       `/state/messages/${encodeURIComponent(messageId)}`,
@@ -78,6 +80,7 @@ export async function getCachedMessage(messageId: string): Promise<CachedMessage
 }
 
 export async function pruneMessages(retentionHours: number): Promise<number> {
+  if (!isCentralApiEnabled()) return 0;
   const olderThanMs = retentionHours * 60 * 60 * 1000;
   const res = await stateRequest<{ ok: boolean; deleted: number }>("/state/messages", {
     method: "DELETE",
@@ -109,6 +112,7 @@ export async function setAdmin(
   addedBy: string,
   name = "",
 ): Promise<void> {
+  if (!isCentralApiEnabled()) return;
   await stateRequest(`/state/admins/${encodeURIComponent(uid)}`, {
     method: "PUT",
     body: { role, addedBy, name },
@@ -126,6 +130,7 @@ export async function removeAdmin(uid: string): Promise<boolean> {
 }
 
 export async function getAdmin(uid: string): Promise<AdminRecord | null> {
+  if (!isCentralApiEnabled()) return null;
   return getOrFetch(`admins:one:${uid}`, async () => {
     const row = await stateRequest<AdminRecord | null>(
       `/state/admins/${encodeURIComponent(uid)}`,
@@ -177,6 +182,7 @@ const FLEET_FAILURE_TTL_MS = 5_000;
  * otherwise add hundreds of ms to each of them.
  */
 export async function getFleetMids(): Promise<string[]> {
+  if (!isCentralApiEnabled()) return [];
   const cached = cacheGet<string[]>("fleet:mids");
   if (cached !== undefined) return cached;
 
@@ -212,6 +218,7 @@ export async function isFleetMember(mid: string): Promise<boolean> {
  * it must never take the bot's startup down with it.
  */
 export async function reportOwnProfileMid(profileMid: string): Promise<void> {
+  if (!isCentralApiEnabled()) return;
   try {
     await stateRequest("/state/fleet/self", { method: "PUT", body: { profileMid } });
     invalidatePrefix("fleet:");
@@ -232,6 +239,7 @@ export async function addToBlacklist(
   reason: string,
   addedBy: string,
 ): Promise<void> {
+  if (!isCentralApiEnabled()) return;
   // A sibling bot can never be blacklisted. The blacklist is user-scoped and
   // shared, so one bad row poisons the entire fleet: join-guard kicks the
   // sibling on sight and sweep_blacklist hunts it across every group. The API
@@ -288,6 +296,7 @@ export async function removeFromBlacklist(uid: string): Promise<boolean> {
  * older worker are therefore inert rather than fatal.
  */
 export async function isBlacklisted(uid: string): Promise<boolean> {
+  if (!isCentralApiEnabled()) return false;
   if (await isFleetMember(uid)) return false;
   return getOrFetch(`blacklist:has:${uid}`, async () => {
     const res = await stateRequest<{ blacklisted: boolean }>(
@@ -322,6 +331,7 @@ export async function setSetting(key: string, value: string): Promise<void> {
 }
 
 export async function getSetting(key: string): Promise<string | null> {
+  if (!isCentralApiEnabled()) return null;
   const hit = cacheGet<string | null>(`settings:${key}`);
   if (hit !== undefined) return hit;
   const res = await stateRequest<{ value: string } | null>(
@@ -400,6 +410,7 @@ export const CLAIM_TTL_MS = 3000;
  * is exactly why the TTL is kept short.
  */
 export async function claimEvent(key: string, ttlMs: number): Promise<boolean> {
+  if (!isCentralApiEnabled()) return false; // no coordinator standalone → don't act
   try {
     const res = await stateRequest<{ won: boolean }>("/state/claims", {
       method: "POST",
@@ -418,6 +429,7 @@ export async function claimEvent(key: string, ttlMs: number): Promise<boolean> {
 // ─── Permissions ──────────────────────────────────────────────────
 
 export async function getUserRole(uid: string): Promise<PermissionRole> {
+  if (!isCentralApiEnabled()) return "user" as PermissionRole;
   if (await isBlacklisted(uid)) {
     return "blacklisted" as PermissionRole;
   }
@@ -475,6 +487,7 @@ export async function getAutoReplies(chatId: string): Promise<AutoReplyRecord[]>
 }
 
 export async function getAutoRepliesForChat(chatId: string): Promise<AutoReplyRecord[]> {
+  if (!isCentralApiEnabled()) return [];
   return getOrFetch(`auto-replies:chat:${chatId}`, async () => {
     const res = await stateRequest<{ items: AutoReplyRecord[] }>("/state/auto-replies", {
       query: { chatId },
@@ -516,6 +529,7 @@ export async function getWordFilters(chatId: string): Promise<WordFilterRecord[]
 }
 
 export async function getWordFiltersForChat(chatId: string): Promise<WordFilterRecord[]> {
+  if (!isCentralApiEnabled()) return [];
   return getOrFetch(`word-filters:chat:${chatId}`, async () => {
     const res = await stateRequest<{ items: WordFilterRecord[] }>("/state/word-filters", {
       query: { chatId },
@@ -536,6 +550,7 @@ export async function upsertWatchedChat(rec: {
   filterType?: string;
   filterPattern?: string;
 }): Promise<void> {
+  if (!isCentralApiEnabled()) return; // standalone seeds the cache directly (chat-registry)
   await stateRequest(`/state/watched-chats/${encodeURIComponent(rec.chatId)}`, {
     method: "PUT",
     body: {
@@ -609,6 +624,7 @@ export async function getWatchedChat(chatId: string): Promise<WatchedChatRecord 
 }
 
 export async function getAllWatchedChats(): Promise<WatchedChatRecord[]> {
+  if (!isCentralApiEnabled()) return [];
   return getOrFetch("watched-chats:all", async () => {
     const res = await stateRequest<{ items: WatchedChatRecord[] }>("/state/watched-chats");
     return res.items;
@@ -639,6 +655,7 @@ export async function setGroupCommandEnabled(
   enabled: boolean,
   updatedBy: string,
 ): Promise<void> {
+  if (!isCentralApiEnabled()) return;
   await stateRequest(
     `/state/group-commands/${encodeURIComponent(chatId)}/${encodeURIComponent(command)}`,
     { method: "PUT", body: { enabled, updatedBy } },
@@ -647,6 +664,7 @@ export async function setGroupCommandEnabled(
 }
 
 export async function getGroupCommandToggles(chatId: string): Promise<GroupCommandToggleRecord[]> {
+  if (!isCentralApiEnabled()) return []; // isGroupCommandEnabled then falls through to its OFF default
   return getOrFetch(`group_command_toggles:${chatId}`, async () => {
     const res = await stateRequest<{ items: GroupCommandToggleRecord[] }>(
       `/state/group-commands/${encodeURIComponent(chatId)}`,
@@ -699,6 +717,7 @@ export async function removeGroupAuthorizedUser(chatId: string, uid: string): Pr
 }
 
 export async function getGroupAuthorizedUsers(chatId: string): Promise<GroupAuthorizedUserRecord[]> {
+  if (!isCentralApiEnabled()) return [];
   return getOrFetch(`group_authorized_users:${chatId}`, async () => {
     const res = await stateRequest<{ items: GroupAuthorizedUserRecord[] }>(
       `/state/group-authorized-users/${encodeURIComponent(chatId)}`,
@@ -728,6 +747,7 @@ export async function saveGroupBackupState(
   groupName: string,
   members: GroupBackupMember[],
 ): Promise<void> {
+  if (!isCentralApiEnabled()) return;
   await stateRequest("/state/group-backups", {
     method: "PUT",
     body: { chatId, groupName, members },
@@ -748,6 +768,7 @@ export async function addBackupMemberState(
   chatId: string,
   member: GroupBackupMember,
 ): Promise<void> {
+  if (!isCentralApiEnabled()) return;
   await stateRequest(`/state/group-backups/${encodeURIComponent(chatId)}/members`, {
     method: "POST",
     body: { mid: member.mid, displayName: member.displayName },
@@ -756,6 +777,7 @@ export async function addBackupMemberState(
 }
 
 export async function getGroupBackupRoster(chatId: string): Promise<GroupBackupRecord | null> {
+  if (!isCentralApiEnabled()) return null;
   return getOrFetch(`group-backups:${chatId}`, async () => {
     const row = await stateRequest<GroupBackupRecord | null>(
       `/state/group-backups/${encodeURIComponent(chatId)}`,
