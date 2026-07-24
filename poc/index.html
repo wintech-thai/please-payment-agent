@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LINE Worker POC</title>
+  <style>
+    :root { color-scheme: light dark; --bg:#0f1115; --card:#1a1e27; --fg:#e6e8ee; --mut:#8b93a7; --acc:#00c300; --bd:#2a3040; }
+    * { box-sizing: border-box; }
+    body { margin:0; font:15px/1.5 system-ui,-apple-system,"Noto Sans Thai",sans-serif; background:var(--bg); color:var(--fg); }
+    header { padding:16px 20px; border-bottom:1px solid var(--bd); display:flex; align-items:center; gap:12px; }
+    header h1 { font-size:16px; margin:0; font-weight:600; }
+    .dot { width:9px; height:9px; border-radius:50%; background:#555; }
+    .dot.ok { background:var(--acc); } .dot.err { background:#e5484d; }
+    main { max-width:1000px; margin:0 auto; padding:20px; display:grid; gap:20px; grid-template-columns:1fr 1fr; }
+    @media (max-width:820px){ main{ grid-template-columns:1fr; } }
+    .card { background:var(--card); border:1px solid var(--bd); border-radius:12px; padding:18px; }
+    .card h2 { font-size:14px; margin:0 0 12px; letter-spacing:.02em; text-transform:uppercase; color:var(--mut); }
+    button { font:inherit; cursor:pointer; background:var(--acc); color:#052b05; border:0; border-radius:8px; padding:9px 16px; font-weight:600; }
+    button.sec { background:#2a3040; color:var(--fg); }
+    button:disabled { opacity:.5; cursor:default; }
+    input { font:inherit; width:100%; padding:9px 11px; border-radius:8px; border:1px solid var(--bd); background:#11151d; color:var(--fg); margin-bottom:8px; }
+    .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .state { font-weight:600; }
+    .badge { display:inline-block; padding:2px 9px; border-radius:20px; font-size:12px; background:#2a3040; }
+    .badge.ready { background:#0c3; color:#052b05; } .badge.error { background:#e5484d; color:#fff; }
+    .pin { font-size:26px; letter-spacing:.15em; font-weight:700; color:var(--acc); }
+    img.qr { width:220px; height:220px; background:#fff; border-radius:10px; padding:8px; display:block; margin:12px 0; }
+    .mut { color:var(--mut); font-size:13px; }
+    .feed { grid-column:1/-1; }
+    .msg { border:1px solid var(--bd); border-radius:10px; padding:12px; margin-bottom:10px; }
+    .msg .meta { display:flex; gap:10px; flex-wrap:wrap; align-items:baseline; margin-bottom:6px; }
+    .msg .txt { font-weight:600; }
+    .msg code { color:var(--mut); font-size:12px; }
+    pre { background:#0b0e14; border-radius:8px; padding:12px; overflow:auto; font-size:12px; margin:8px 0 0; max-height:320px; }
+    details summary { cursor:pointer; color:var(--mut); font-size:13px; }
+    .empty { color:var(--mut); padding:20px; text-align:center; }
+    .hint { grid-column:1/-1; font-size:13px; color:var(--mut); background:#161a22; border:1px dashed var(--bd); border-radius:10px; padding:10px 14px; }
+  </style>
+</head>
+<body>
+  <header>
+    <span id="hdot" class="dot"></span>
+    <h1>LINE Worker POC</h1>
+    <span id="health" class="mut"></span>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>1 · Login — QR</h2>
+      <div class="row"><button id="btnQr">เริ่ม QR login</button></div>
+      <div id="qrBox"></div>
+    </section>
+
+    <section class="card">
+      <h2>2 · Login — Email / Password</h2>
+      <form id="pwForm">
+        <input id="email" type="email" placeholder="email" autocomplete="username" />
+        <input id="password" type="password" placeholder="password" autocomplete="current-password" />
+        <button type="submit">เข้าสู่ระบบ</button>
+      </form>
+    </section>
+
+    <section class="card" style="grid-column:1/-1">
+      <h2>สถานะ Login</h2>
+      <div class="row">
+        <span>state:</span> <span id="lstate" class="badge">—</span>
+        <span id="lprofile" class="mut"></span>
+      </div>
+      <div id="lpin"></div>
+      <div id="lerr" class="mut" style="color:#e5484d"></div>
+    </section>
+
+    <div class="hint" id="watchHint"></div>
+
+    <section class="card feed">
+      <h2>3 · generic forward → WEBHOOK_URL (raw JSON)</h2>
+      <div id="feed"><div class="empty">ยังไม่มีข้อความ — ส่งข้อความในกลุ่มที่ watch ไว้</div></div>
+    </section>
+
+    <section class="card feed">
+      <h2>4 · ONIX (จำลองปลายทาง NotifyLineMessage)</h2>
+      <div class="mut" id="onixHint"></div>
+      <div id="onixFeed"><div class="empty">ยังไม่มีข้อความ ONIX — ต้องเป็นข้อความจาก bank OA ที่ watch ไว้</div></div>
+    </section>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const j = (r) => r.json();
+
+    // --- health ---
+    async function health() {
+      try {
+        const h = await fetch("/api/health").then(j);
+        $("hdot").className = "dot " + (h.ok ? "ok" : "err");
+        $("health").textContent = h.ok ? `instance ${h.instanceId} · login ${h.login}` : "worker unreachable";
+      } catch { $("hdot").className = "dot err"; $("health").textContent = "worker unreachable"; }
+    }
+
+    // --- login trigger ---
+    $("btnQr").onclick = async () => {
+      $("btnQr").disabled = true;
+      await fetch("/api/login/qr", { method: "POST" });
+      setTimeout(() => ($("btnQr").disabled = false), 3000);
+    };
+    $("pwForm").onsubmit = async (e) => {
+      e.preventDefault();
+      await fetch("/api/login/password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: $("email").value, password: $("password").value }),
+      });
+    };
+
+    // --- login status poll ---
+    async function status() {
+      let s;
+      try { s = await fetch("/api/login/status").then(j); } catch { return; }
+      const b = $("lstate");
+      b.textContent = s.state ?? "—";
+      b.className = "badge" + (s.state === "ready" ? " ready" : s.state === "error" ? " error" : "");
+      $("lprofile").textContent = s.profileName ? `· ${s.profileName}` : "";
+      $("lerr").textContent = s.error ? "error: " + s.error : "";
+      $("lpin").innerHTML = s.pincode ? `กรอก PIN นี้ในแอป LINE: <span class="pin">${s.pincode}</span>` : "";
+      const box = $("qrBox");
+      if (s.qrDataUrl && s.state === "qr_pending") {
+        if (box.dataset.src !== s.qrDataUrl) {
+          box.dataset.src = s.qrDataUrl;
+          box.innerHTML = `<img class="qr" src="${s.qrDataUrl}" alt="QR"/><div class="mut">สแกนด้วยแอป LINE</div>`;
+        }
+      } else if (s.state === "ready") {
+        box.dataset.src = ""; box.innerHTML = `<div class="mut">✓ พร้อมใช้งาน</div>`;
+      }
+    }
+
+    // --- forwarded messages ---
+    function esc(s){ return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+    async function feed() {
+      let list;
+      try { list = await fetch("/api/messages").then(j); } catch { return; }
+      const el = $("feed");
+      if (!list.length) { el.innerHTML = '<div class="empty">ยังไม่มีข้อความ — ส่งข้อความในกลุ่มที่ watch ไว้</div>'; return; }
+      el.innerHTML = list.map((m) => {
+        const p = m.payload || {};
+        return `<div class="msg">
+          <div class="meta">
+            <span class="txt">${esc(p.text || "(no text)")}</span>
+            <code>${esc(p.chatName || "")} · ${esc(p.chatType || "")}</code>
+          </div>
+          <div class="mut">chatId <code>${esc(p.chatId || "?")}</code> · ${esc(m.receivedAt)}${m.signature ? " · signed ✓" : ""}</div>
+          <details><summary>raw JSON</summary><pre>${esc(JSON.stringify(m, null, 2))}</pre></details>
+        </div>`;
+      }).join("");
+    }
+
+    async function onixFeed() {
+      let list;
+      try { list = await fetch("/api/onix").then(j); } catch { return; }
+      const el = $("onixFeed");
+      if (!list.length) { el.innerHTML = '<div class="empty">ยังไม่มีข้อความ ONIX — ต้องเป็นข้อความจาก bank OA ที่ watch ไว้</div>'; return; }
+      el.innerHTML = list.map((m) => {
+        const b = m.body || {};
+        return `<div class="msg">
+          <div class="meta">
+            <span class="txt">${esc(b.title || "")}: ${esc(b.text || "")}</span>
+            <code>${m.authOk ? "auth ✓" : "auth ✗"} · ${esc(m.appType || "")}</code>
+          </div>
+          <div class="mut">agentId <code>${esc(m.agentId || "?")}</code> · ${esc(m.receivedAt)}</div>
+          <details><summary>raw JSON</summary><pre>${esc(JSON.stringify(m, null, 2))}</pre></details>
+        </div>`;
+      }).join("");
+    }
+
+    fetch("/api/config").then(j).then((c) => {
+      $("watchHint").textContent = c.watchChatIds
+        ? `WATCH_CHAT_IDS = ${c.watchChatIds} — เฉพาะข้อความจากแชทเหล่านี้จึงจะถูก forward`
+        : "WATCH_CHAT_IDS ยังว่าง — login ก่อน แล้วส่งข้อความในกลุ่ม ดู chatId จาก logs (RAW_OP_LOG) แล้วตั้งค่าใน .env";
+      $("onixHint").textContent = c.onixAgentId
+        ? `endpoint: POST /admin-api/AdminAgent/org/global/action/NotifyLineMessage/${c.onixAgentId}`
+        : "ONIX ยังไม่ถูกตั้งค่าใน worker (ต้องตั้ง ONIX_API_URL + ONIX_AGENT_ID + ONIX_API_KEY)";
+    }).catch(() => {});
+
+    health(); status(); feed(); onixFeed();
+    setInterval(health, 5000);
+    setInterval(status, 1500);   // ponytail: 1.5s poll, SSE if it ever needs scale
+    setInterval(feed, 1500);
+    setInterval(onixFeed, 1500);
+  </script>
+</body>
+</html>

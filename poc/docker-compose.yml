@@ -1,0 +1,63 @@
+# POC stack — redis + the LINE worker (built from this repo) + the POC app.
+# One `docker compose up --build` runs everything. See README.md.
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+
+  worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - redis
+    entrypoint: ["sh", "/app/scripts/worker-entrypoint.sh"]
+    env_file:
+      - .env
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - HTTP_PORT=3000
+      - HTTP_API_KEY=${HTTP_API_KEY:-poc-secret}
+      - INSTANCE_ID=${INSTANCE_ID:-poc-001}
+      - API_BASE_URL=            # empty → fully standalone
+      - WATCH_CHAT_IDS=${WATCH_CHAT_IDS:-}
+      - WEBHOOK_URL=http://poc-app:8080/ingest
+      # ONIX bank-OA sink → simulated by poc-app. All three enable it.
+      - ONIX_API_URL=http://poc-app:8080
+      - ONIX_ORG=global
+      - ONIX_AGENT_ID=${ONIX_AGENT_ID:-00000000-0000-0000-0000-000000000001}
+      - ONIX_API_KEY=${ONIX_API_KEY:-apikey}
+      - BANK_OA_HANDLES=${BANK_OA_HANDLES:-@scbconnect,@krungthaiconnext,@kbanklive}
+      - RAW_OP_LOG=1             # so unwatched chatIds still show up in ../logs for discovery
+      - RAW_OP_LOG_DIR=/app/logs
+    volumes:
+      - ../logs:/app/logs
+    # ports:                     # uncomment to curl the worker's login API directly
+    #   - "3000:3000"
+
+  poc-app:
+    image: oven/bun:1-slim
+    restart: unless-stopped
+    working_dir: /app
+    depends_on:
+      - worker
+    volumes:
+      - .:/app                   # ponytail: dev-mount + bun install, no second Dockerfile
+    command: sh -c "bun install && bun run server.ts"
+    environment:
+      - PORT=8080
+      - WORKER_URL=http://worker:3000
+      - HTTP_API_KEY=${HTTP_API_KEY:-poc-secret}
+      - WATCH_CHAT_IDS=${WATCH_CHAT_IDS:-}
+      - ONIX_API_KEY=${ONIX_API_KEY:-apikey}       # so the sim can verify Basic auth
+      - ONIX_AGENT_ID=${ONIX_AGENT_ID:-00000000-0000-0000-0000-000000000001}
+    ports:
+      - "8080:8080"
+
+volumes:
+  redis-data:
