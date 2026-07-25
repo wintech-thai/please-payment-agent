@@ -9,6 +9,8 @@
  *
  * Request (derived from onix examples/Admin/test-admin-agent-notify.rb + utils.rb):
  *   POST {apiUrl}/admin-api/AdminAgent/org/{org}/action/NotifyLineMessage/{agentId}
+ * When ONIX_API_URL already contains the NotifyLineMessage action path, it is the
+ * full endpoint and is used verbatim — nothing is appended (see resolveEndpoint).
  *   Authorization:         Basic base64("{apiUser}:{apiKey}")   // user "api", pass = key
  *   Content-Type:          application/json
  *   Onix-Application-Type: backend
@@ -72,8 +74,16 @@ export function isOnixEnabled(): boolean {
   return config?.enabled === true;
 }
 
-/** Full NotifyLineMessage endpoint for the configured agent. */
-function buildEndpoint(cfg: OnixConfig): string {
+/**
+ * Full NotifyLineMessage endpoint for the configured agent.
+ *
+ * ONIX_API_URL is normally the API base URL and the standard action path is
+ * appended from org + agentId. A deployment can instead configure the FULL
+ * endpoint (URL already containing the NotifyLineMessage action path) — then it
+ * is used verbatim, so the POST hits exactly ONIX_API_URL.
+ */
+export function resolveEndpoint(cfg: Pick<OnixConfig, "apiUrl" | "org" | "agentId">): string {
+  if (cfg.apiUrl.includes("/action/NotifyLineMessage")) return cfg.apiUrl;
   return `${cfg.apiUrl}/admin-api/AdminAgent/org/${cfg.org}/action/NotifyLineMessage/${cfg.agentId}`;
 }
 
@@ -100,7 +110,7 @@ export async function notifyLineMessage(input: OnixNotifyInput): Promise<OnixRes
     text: input.text,
   });
 
-  const url = buildEndpoint(cfg);
+  const url = resolveEndpoint(cfg);
   const headers = {
     "Content-Type": "application/json",
     "Onix-Application-Type": cfg.appType,

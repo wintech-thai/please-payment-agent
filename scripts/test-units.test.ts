@@ -3194,3 +3194,27 @@ describe("💾 Redis session persistence", () => {
     expect(await loadSessionFromRedis()).toEqual({ authToken: null, storage: null });
   });
 });
+
+// ─── onix Endpoint Resolution Tests ─────────────────────────────
+import { resolveEndpoint } from "../src/core/onix-client.js";
+
+describe("🏦 onix — resolveEndpoint()", () => {
+  const org = "global";
+  const agentId = "b71860ae-0ac5-4dd1-ac0e-48369370aa48";
+
+  test("base URL → standard NotifyLineMessage path appended", () => {
+    expect(resolveEndpoint({ apiUrl: "http://poc-app:8080", org, agentId })).toBe(
+      `http://poc-app:8080/admin-api/AdminAgent/org/global/action/NotifyLineMessage/${agentId}`,
+    );
+  });
+
+  test("full endpoint URL → used verbatim, nothing appended", () => {
+    const full = `http://please-payment-dev-onix-api/admin-api/AdminAgent/org/global/action/NotifyLineMessage/${agentId}`;
+    expect(resolveEndpoint({ apiUrl: full, org, agentId })).toBe(full);
+  });
+
+  test("full endpoint URL wins even when org/agentId differ from the path", () => {
+    const full = `https://api.onix.example.com/admin-api/AdminAgent/org/other/action/NotifyLineMessage/${agentId}`;
+    expect(resolveEndpoint({ apiUrl: full, org: "global", agentId: "ignored" })).toBe(full);
+  });
+});

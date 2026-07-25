@@ -146,6 +146,11 @@ Onix-Application-Type: backend
 Authorization:         Basic base64("api:apikey")
 ```
 
+> ถ้า `ONIX_API_URL` มี path `/action/NotifyLineMessage` อยู่แล้ว (กรอกมาเป็น endpoint เต็ม)
+> worker จะยิงไปที่ URL นั้น **ตรง ๆ ไม่ต่อ path เพิ่ม** — `ONIX_ORG`/`ONIX_AGENT_ID`
+> จะไม่ถูกใช้ประกอบ URL (แต่ยังต้องตั้ง `ONIX_AGENT_ID` เพื่อ enable + ใช้ใน log)
+> ดู `onix-client.ts` `resolveEndpoint`
+
 ### Body
 
 ```json
@@ -198,6 +203,9 @@ BANK_OA_HANDLES=@scbconnect,@krungthaiconnext,@kbanklive
 ```
 
 onix forwarding **ปิดอัตโนมัติ** ถ้าไม่ได้ตั้ง `ONIX_API_URL` + `ONIX_AGENT_ID` + `ONIX_API_KEY` ครบ
+
+`ONIX_API_URL` กรอกได้ 2 แบบ: **base URL** (ตามตัวอย่างข้างบน — worker ต่อ path มาตรฐานให้)
+หรือ **endpoint เต็ม** ที่มี `/action/NotifyLineMessage/...` อยู่แล้ว → ใช้ตรง ๆ ไม่ต่อ path ซ้ำ
 
 ### Generic forward (standalone — §3b)
 
