@@ -144,6 +144,24 @@ jobs:
       env:
         SLACK_WEBHOOK_URL: ${{ secrets.SLACK_URL }} # required
 
+    # Post-deploy check: curl the live GET /status and print its `build` block so
+    # the run log shows exactly which commit/branch is serving. Warns (does not
+    # fail) on mismatch because deployment is not yet automated in this job.
+    # Requires repo variable STATUS_URL (e.g. https://worker.example.com/status)
+    # and secret HTTP_API_KEY; skipped silently until STATUS_URL is set.
+    - name: Verify deployed build via /status
+      if: ${{ vars.STATUS_URL != '' }}
+      run: |
+        BUILD=$(curl -fsS -u "${{ vars.HTTP_API_USER || 'api' }}:${{ secrets.HTTP_API_KEY }}" "${{ vars.STATUS_URL }}" | jq .build)
+        echo "deployed build info:"
+        echo "$BUILD" | jq .
+        DEPLOYED=$(echo "$BUILD" | jq -r .commit)
+        if [ "$DEPLOYED" = "$GITHUB_SHA" ]; then
+          echo "OK: deployed commit matches $GITHUB_SHA (branch $(echo "$BUILD" | jq -r .branch))"
+        else
+          echo "::warning::deployed commit is $DEPLOYED, expected $GITHUB_SHA — old image still running?"
+        fi
+
     - name: Slack notification end
       if: always()
       uses: 8398a7/action-slack@v3

@@ -9,7 +9,17 @@ services:
       - redis-data:/data
 
   worker:
-    image: asia-southeast1-docker.pkg.dev/its-artifact-commons/please-payment/please-payment-agent:main-0029312
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      # Stamp the image with its source commit so GET /status can report exactly
+      # what is deployed. Use ./up.sh (exports these from git automatically):
+      #   ./up.sh up --build -d
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+        GIT_BRANCH: ${GIT_BRANCH:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+        GIT_DIRTY: ${GIT_DIRTY:-0}
     restart: unless-stopped
     depends_on:
       - redis
