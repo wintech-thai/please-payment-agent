@@ -220,7 +220,11 @@ export function createInterceptFeature(config: WorkerConfig): Feature {
           contentType: payload.contentType,
         });
       } else {
-        const result = await notifyLineMessage({ title: watched.chatName, text: msg.text });
+        const result = await notifyLineMessage({
+          title: watched.chatName,
+          text: msg.text,
+          ...(bankTx ? { bankTx } : {}),
+        });
         if (!result.ok && !result.skipped) {
           logger.warn("onix notify failed for watched OA", {
             chatId: msg.chatId,
