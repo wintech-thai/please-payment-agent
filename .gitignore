@@ -29,3 +29,6 @@ Thumbs.db
 
 # Local scratch/test tooling — not part of the shipped worker.
 .poc/
+
+# Captured bank-OA request logs (real names/accounts) — never push.
+.req/

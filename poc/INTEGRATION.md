@@ -279,7 +279,8 @@ ONIX_FORWARD_TIMEOUT_MS=5000
 ```
 
 worker POST ไป `{ONIX_API_URL}/admin-api/AdminAgent/org/{ONIX_ORG}/action/NotifyLineMessage/{ONIX_AGENT_ID}`
-(`src/core/onix-client.ts`) เมื่อข้อความ **มาจาก watched OA** (`chatType:"oa"`) **และมี text ไม่ว่าง**:
+(`src/core/onix-client.ts`) เมื่อข้อความ **มาจาก watched OA** (`chatType:"oa"`) **และมี text ไม่ว่าง**.
+ถ้า `ONIX_API_URL` เป็น endpoint เต็ม (มี `/action/NotifyLineMessage` อยู่แล้ว) worker ยิงไปที่ URL นั้นตรง ๆ ไม่ต่อ path ซ้ำ:
 
 ```
 POST /admin-api/AdminAgent/org/global/action/NotifyLineMessage/00000000-0000-0000-0000-000000000001

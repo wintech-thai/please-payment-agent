@@ -147,13 +147,14 @@ relay กลับ user app
 | `REDIS_KEY_PREFIX` | — | `rlbotline:${INSTANCE_ID}` | namespace ของ session key (`{prefix}:auth-token`, `{prefix}:storage`) — container ที่ใช้ LINE account เดียวกันต้องตั้งค่านี้ให้ตรงกันเพื่อ restore session เดียวกัน |
 | `WATCH_CHAT_IDS` | — | `""` (ว่าง) | comma-separated chat id (เช่น `c...`) ที่จะ watch + forward ไป `WEBHOOK_URL` ในโหมด standalone (ไม่มี Central API) — seed เข้า cache ตอน boot ผ่าน `seedWatchedChats()` |
 | `WEBHOOK_URL` | — | `${API_BASE_URL}/webhooks/forward` เมื่อตั้ง `API_BASE_URL`; ไม่งั้น `undefined` | sink กลางของ forward แบบ generic — โหมด standalone ต้องตั้งเองถ้าต้องการ forward ออกไปไหน |
-| `ONIX_API_URL` | onix* | — | Base URL ของ onix (ไม่มี `/` ท้าย) |
+| `ONIX_API_URL` | onix* | — | Base URL ของ onix (ไม่มี `/` ท้าย) หรือ endpoint เต็มที่มี `/action/NotifyLineMessage` แล้ว → ใช้ตรง ๆ ไม่ต่อ path |
 | `ONIX_ORG` | — | `global` | ค่าใน path `org/{ONIX_ORG}` |
 | `ONIX_AGENT_ID` | onix* | — | UUID ของ agent ที่รับ NotifyLineMessage |
 | `ONIX_API_USER` | — | `api` | Basic auth user |
 | `ONIX_API_KEY` | onix* | — | Basic auth password / API key (secret) |
 | `ONIX_APPLICATION_TYPE` | — | `backend` | ค่า header `Onix-Application-Type` |
 | `ONIX_FORWARD_TIMEOUT_MS` | — | `5000` | timeout ของ POST ไป onix (ms) |
+| `FILTER_EVENT` | — | `""` (ว่าง = ไม่กรอง forward ทุก message) | กรอง bank-OA ตาม `eventType` (`tx_in,tx_out`) เมื่อตั้งค่า: ธุรกรรมผ่านตามชื่อ event, non-tx จากธนาคารที่รู้ pattern (SCB/KTB) ถูก drop, OA ที่ยังไม่รู้ pattern forward ทุก message เสมอ — ดู forwarding.md §2/§2a |
 | `BANK_OA_HANDLES` | — | `@scbconnect,@krungthaiconnext,@kbanklive` | รายการ OA ที่ follow + watch |
 | `HTTP_PORT` | — | `3000` | พอร์ต inbound HTTP API (login/health); `0` = ปิด |
 | `HTTP_API_USER` | — | `api` | Basic auth user ของ HTTP API |

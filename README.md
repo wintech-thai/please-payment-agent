@@ -118,7 +118,7 @@ for the full list. Key ones:
 | `WEBHOOK_URL` | Generic forward sink; defaults to `${API_BASE_URL}/webhooks/forward` when `API_BASE_URL` is set, otherwise `undefined` — set explicitly for standalone forwarding |
 | `LINE_EMAIL` / `LINE_PASSWORD` | Standalone email/password login sent directly to the worker (optional) — the only credential source now (no session-based fallback) |
 | `LINE_AUTH_TOKEN` | Optional pre-issued auth token — fallback when no token is persisted in Redis |
-| `ONIX_API_URL` | onix base URL — enables onix forwarding when set (with agent id + key) |
+| `ONIX_API_URL` | onix base URL (standard path appended) or full NotifyLineMessage endpoint (used verbatim) — enables onix forwarding when set (with agent id + key) |
 | `ONIX_AGENT_ID` | onix agent UUID that receives `NotifyLineMessage` |
 | `ONIX_API_USER` / `ONIX_API_KEY` | Basic auth for onix (default user `api`; key is the password) |
 | `ONIX_ORG` / `ONIX_APPLICATION_TYPE` | onix path org segment (`global`) / `Onix-Application-Type` header (`backend`) |

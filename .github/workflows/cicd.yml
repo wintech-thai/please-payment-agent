@@ -58,12 +58,23 @@ jobs:
 
         DOCKERFILE=Dockerfile
 
+        # Source ref this image is built from — baked into the image so GET /status
+        # can report it. A tag build reports the tag; a branch build, the branch.
+        if [[ $GITHUB_REF == refs/tags/* ]]; then
+          SOURCE_REF=${GITHUB_REF#refs/tags/}
+        else
+          SOURCE_REF=${GITHUB_REF#refs/heads/}
+        fi
+        BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
         echo ::set-output name=tags::${TAGS}
         echo ::set-output name=gcr_tags::${GCR_TAGS}
         echo ::set-output name=version::${VERSION}
         echo ::set-output name=deployEnv::${ENV}
         echo ::set-output name=autoDeployBranch::${DEPLOYMENT_BRANCH}
         echo ::set-output name=dockerFile::${DOCKERFILE}
+        echo ::set-output name=sourceRef::${SOURCE_REF}
+        echo ::set-output name=buildTime::${BUILD_TIME}
 
     - name: Slack notification start
       uses: 8398a7/action-slack@v3
@@ -99,7 +110,14 @@ jobs:
         push: true
         load: false
         tags: ${{ steps.prep.outputs.gcr_tags }}
-        build-args: version=${{ steps.prep.outputs.version }}
+        # GIT_* stamp the image so GET /status reports the deployed commit/branch
+        # instead of "unknown" — without these a running pod cannot be matched
+        # back to its source.
+        build-args: |
+          version=${{ steps.prep.outputs.version }}
+          GIT_COMMIT=${{ github.sha }}
+          GIT_BRANCH=${{ steps.prep.outputs.sourceRef }}
+          BUILD_TIME=${{ steps.prep.outputs.buildTime }}
 
     - name: Slack notification end
       if: always()
@@ -125,6 +143,24 @@ jobs:
         text: "Start deploying [please-payment-agent] [${{ needs.build1.outputs.imageTag }}] to [${{ needs.build1.outputs.autoDeployEnv }}]..."
       env:
         SLACK_WEBHOOK_URL: ${{ secrets.SLACK_URL }} # required
+
+    # Post-deploy check: curl the live GET /status and print its `build` block so
+    # the run log shows exactly which commit/branch is serving. Warns (does not
+    # fail) on mismatch because deployment is not yet automated in this job.
+    # Requires repo variable STATUS_URL (e.g. https://worker.example.com/status)
+    # and secret HTTP_API_KEY; skipped silently until STATUS_URL is set.
+    - name: Verify deployed build via /status
+      if: ${{ vars.STATUS_URL != '' }}
+      run: |
+        BUILD=$(curl -fsS -u "${{ vars.HTTP_API_USER || 'api' }}:${{ secrets.HTTP_API_KEY }}" "${{ vars.STATUS_URL }}" | jq .build)
+        echo "deployed build info:"
+        echo "$BUILD" | jq .
+        DEPLOYED=$(echo "$BUILD" | jq -r .commit)
+        if [ "$DEPLOYED" = "$GITHUB_SHA" ]; then
+          echo "OK: deployed commit matches $GITHUB_SHA (branch $(echo "$BUILD" | jq -r .branch))"
+        else
+          echo "::warning::deployed commit is $DEPLOYED, expected $GITHUB_SHA — old image still running?"
+        fi
 
     - name: Slack notification end
       if: always()

@@ -1,0 +1,67 @@
+{
+  "footer": {
+    "type": "box",
+    "layout": "vertical",
+    "contents": [
+      {
+        "layout": "vertical",
+        "type": "box",
+        "contents": [
+          {
+            "height": "md",
+            "type": "button",
+            "action": {
+              "label": "เปิดใช้งาน",
+              "uri": "https://liff.line.me/1506975860-8QZ4ERoa?page=manageBalanceInquiry",
+              "type": "uri"
+            },
+            "color": "#6F31CC",
+            "style": "primary"
+          }
+        ],
+        "margin": "xxl"
+      },
+      {
+        "margin": "sm",
+        "url": "https://bcrm-connect-scb.s3-ap-southeast-1.amazonaws.com/bcrm/uploads/credit_card_flex_image/scb-logo.png",
+        "size": "xxs",
+        "align": "end",
+        "type": "image",
+        "aspectRatio": "7:3"
+      }
+    ]
+  },
+  "type": "bubble",
+  "body": {
+    "contents": [
+      {
+        "contents": [
+          {
+            "wrap": true,
+            "text": "คุณลูกค้าเริ่มใช้งานฟีเจอร์ “เช็กยอดเงินฝาก” ได้ง่ายๆด้วยการ กดปุ่มเปิดใช้งาน เพื่อตั้งค่าฟีเจอร์ ด้านล่างนี้ได้เลยน้า 💜",
+            "type": "text"
+          }
+        ],
+        "paddingTop": "0px",
+        "layout": "vertical",
+        "type": "box"
+      }
+    ],
+    "type": "box",
+    "layout": "vertical"
+  },
+  "hero": {
+    "paddingTop": "24px",
+    "paddingBottom": "12px",
+    "layout": "vertical",
+    "type": "box",
+    "contents": [
+      {
+        "aspectRatio": "301:162",
+        "type": "image",
+        "size": "3xl",
+        "url": "https://bcrm-connect-scb.s3-ap-southeast-1.amazonaws.com/bcrm/uploads/Deposit+Inquiry/Confirmation/deposit_account_default.png"
+      }
+    ]
+  }
+}

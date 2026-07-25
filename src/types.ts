@@ -249,11 +249,17 @@ export enum LineOpType {
  *   {apiUrl}/admin-api/AdminAgent/org/{org}/action/NotifyLineMessage/{agentId}
  * with Basic auth ("{apiUser}:{apiKey}") and an `Onix-Application-Type` header —
  * see `src/core/onix-client.ts`. Disabled unless apiUrl + agentId + apiKey are set.
+ * When apiUrl already contains the NotifyLineMessage action path it is used
+ * verbatim (nothing appended) — the POST hits exactly ONIX_API_URL.
  */
 export interface OnixConfig {
   /** True when apiUrl + agentId + apiKey are all present. */
   enabled: boolean;
-  /** Base URL of the onix API, no trailing slash (e.g. https://api.onix.example.com). */
+  /**
+   * onix target URL, no trailing slash. Either the API base URL (standard
+   * NotifyLineMessage path gets appended) or the full endpoint including the
+   * NotifyLineMessage action path (used verbatim).
+   */
   apiUrl: string;
   /** Path segment used as `org/{org}` — defaults to "global". */
   org: string;
@@ -351,6 +357,11 @@ export interface WorkerConfig {
    * account has not added is skipped (the customer adds it themselves).
    */
   bankOaMids: string[];
+  /**
+   * Bank-OA event filter (`FILTER_EVENT`, comma-separated, e.g. "tx_in,tx_out").
+   * Empty = forward every parsed bank event. Matched against `BankTx.eventType`.
+   */
+  filterEvent: string[];
   /** Inbound HTTP API port (login + health). 0 disables the server. */
   httpPort: number;
   /** True when httpPort > 0 — this standalone app exposes an inbound HTTP API. */

@@ -1,0 +1,281 @@
+{
+  "type": "bubble",
+  "size": "mega",
+  "direction": "ltr",
+  "header": {
+    "type": "box",
+    "layout": "vertical",
+    "contents": [
+      {
+        "type": "image",
+        "url": "https://connect.scb/template/assets/9a47583b-0ce2-49da-b2cc-7b0e1f5ea24e/f876ae8c-9ce9-4d8f-86a4-fa2fa51d378d",
+        "size": "full",
+        "aspectMode": "cover",
+        "aspectRatio": "300:50",
+        "offsetTop": "none",
+        "offsetBottom": "none",
+        "offsetStart": "none",
+        "offsetEnd": "none",
+        "margin": "none",
+        "align": "start"
+      },
+      {
+        "type": "separator"
+      }
+    ],
+    "paddingAll": "0px",
+    "spacing": "none",
+    "margin": "none",
+    "paddingTop": "none",
+    "width": "300px",
+    "height": "50px"
+  },
+  "body": {
+    "type": "box",
+    "layout": "vertical",
+    "contents": [
+      {
+        "type": "box",
+        "layout": "vertical",
+        "contents": [
+          {
+            "type": "text",
+            "size": "16px",
+            "color": "#4F4F4F",
+            "flex": 0,
+            "weight": "regular",
+            "style": "normal",
+            "offsetBottom": "5px",
+            "offsetTop": "0px",
+            "text": "รายการเงินเข้า",
+            "gravity": "top"
+          },
+          {
+            "type": "text",
+            "text": "+200.00 บาท",
+            "size": "18px",
+            "weight": "bold",
+            "wrap": true,
+            "color": "#7F1DEF",
+            "align": "start",
+            "margin": "md",
+            "offsetBottom": "7px"
+          }
+        ],
+        "margin": "none",
+        "height": "60px",
+        "width": "100%",
+        "paddingTop": "8px",
+        "paddingStart": "16px",
+        "paddingEnd": "16px"
+      },
+      {
+        "type": "box",
+        "layout": "vertical",
+        "contents": [
+          {
+            "type": "separator"
+          },
+          {
+            "type": "box",
+            "layout": "baseline",
+            "contents": [
+              {
+                "type": "text",
+                "text": "จากบัญชี",
+                "size": "14px",
+                "color": "#808080",
+                "flex": 0
+              },
+              {
+                "type": "text",
+                "text": "SUEBPONG MONS X-3090\nกรุงไทย",
+                "size": "14px",
+                "color": "#4F4F4F",
+                "weight": "regular",
+                "align": "end",
+                "wrap": true,
+                "offsetTop": "1px"
+              }
+            ],
+            "paddingTop": "7px",
+            "paddingBottom": "2px"
+          },
+          {
+            "type": "box",
+            "layout": "baseline",
+            "contents": [
+              {
+                "type": "text",
+                "text": "เข้าบัญชี",
+                "flex": 0,
+                "size": "14px",
+                "color": "#808080"
+              },
+              {
+                "type": "text",
+                "text": "X-9148",
+                "size": "14px",
+                "color": "#4F4F4F",
+                "weight": "regular",
+                "align": "end",
+                "offsetTop": "2px"
+              }
+            ],
+            "paddingTop": "4px",
+            "paddingBottom": "3px"
+          },
+          {
+            "type": "box",
+            "layout": "baseline",
+            "contents": [
+              {
+                "type": "text",
+                "text": "วันที่/เวลา",
+                "size": "14px",
+                "color": "#808080",
+                "flex": 0
+              },
+              {
+                "type": "text",
+                "text": "25/07/2026 16:40",
+                "size": "14px",
+                "color": "#4F4F4F",
+                "align": "end",
+                "weight": "regular",
+                "offsetTop": "1px"
+              }
+            ],
+            "paddingTop": "5px",
+            "paddingBottom": "7px"
+          },
+          {
+            "type": "separator"
+          },
+          {
+            "type": "box",
+            "layout": "horizontal",
+            "contents": [
+              {
+                "type": "text",
+                "text": "ยอดเงินที่ใช้ได้",
+                "size": "14px",
+                "color": "#4F4F4F",
+                "weight": "regular",
+                "align": "start",
+                "flex": 0
+              },
+              {
+                "type": "text",
+                "text": "19,116.39 บาท",
+                "size": "14px",
+                "color": "#4F4F4F",
+                "align": "end",
+                "weight": "regular"
+              }
+            ],
+            "paddingTop": "7px"
+          }
+        ],
+        "width": "100%",
+        "height": "145px",
+        "paddingTop": "2px",
+        "paddingStart": "16px",
+        "paddingEnd": "16px",
+        "paddingBottom": "0px"
+      },
+      {
+        "type": "box",
+        "layout": "vertical",
+        "contents": [
+          {
+            "type": "button",
+            "action": {
+              "type": "uri",
+              "label": "ดูรายการเดินบัญชี",
+              "uri": "https://liff.line.me/1506975860-8QZ4ERoa?page=dgsDepositInq&entryPoint=1"
+            },
+            "style": "primary",
+            "height": "sm",
+            "offsetTop": "5px",
+            "color": "#7F1DEF",
+            "margin": "none"
+          }
+        ],
+        "width": "100%",
+        "paddingStart": "16px",
+        "paddingEnd": "16px",
+        "height": "55px"
+      },
+      {
+        "type": "box",
+        "layout": "vertical",
+        "contents": [
+          {
+            "type": "image",
+            "url": "https://connect.scb/template/assets/ce8dcbda-3462-4cf7-b998-1f6104dc5e37/bde57354-d059-4499-a840-f64fae461158",
+            "margin": "none",
+            "align": "start",
+            "size": "full",
+            "aspectRatio": "300:32",
+            "aspectMode": "cover",
+            "action": {
+              "type": "uri",
+              "label": "action",
+              "uri": "https://liff.line.me/1506975860-7NQxGzvb/DG3QLs"
+            }
+          }
+        ],
+        "width": "100%",
+        "height": "32px",
+        "paddingStart": "16px",
+        "paddingEnd": "16px"
+      }
+    ],
+    "paddingAll": "0px",
+    "margin": "none",
+    "spacing": "none",
+    "width": "100%",
+    "height": "299px",
+    "paddingTop": "0px"
+  },
+  "footer": {
+    "type": "box",
+    "layout": "vertical",
+    "contents": [
+      {
+        "layout": "horizontal",
+        "type": "box",
+        "contents": [
+          {
+            "size": "xxl",
+            "aspectRatio": "160:20",
+            "type": "image",
+            "gravity": "top",
+            "align": "start",
+            "offsetStart": "6px",
+            "url": "https://connect.scb/template/assets/05b8d148-b888-492e-abf8-a81d268b90ee/e962d8dc-d464-47ad-b200-1e8db2938620",
+            "action": {
+              "type": "message",
+              "label": "action",
+              "text": "แจ้งปัญหาการทำรายการ"
+            }
+          },
+          {
+            "url": "https://bcrm-connect-scb.s3-ap-southeast-1.amazonaws.com/bcrm/uploads/credit_card_flex_image/scb-logo.png",
+            "flex": 0,
+            "size": "xxs",
+            "aspectRatio": "7:3",
+            "align": "end",
+            "type": "image",
+            "gravity": "top",
+            "margin": "xl"
+          }
+        ],
+        "offsetBottom": "10px",
+        "alignItems": "center"
+      }
+    ],
+    "height": "32px"
+  }
+}

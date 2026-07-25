@@ -102,16 +102,24 @@ export function loadConfig(): WorkerConfig {
     timeoutMs: optionalInt("ONIX_FORWARD_TIMEOUT_MS", 5000),
   };
 
-  // Bank OAs the worker follows + watches by @handle. Defaults to the three Thai
-  // bank OAs, but an explicitly-set empty value turns it OFF — `optionalEnv` would
-  // hand back the default instead, leaving no way to stop the boot-time lookups.
-  // That matters because @handle resolution (findContactByUserid) does not work
-  // for OA basic-ids: it burns a rate-limited LINE call per handle and warns every
-  // boot. Prefer BANK_OA_MIDS, then set BANK_OA_HANDLES= to silence this path.
-  const bankOaHandles = (process.env.BANK_OA_HANDLES ?? "@scbconnect,@krungthaiconnext,@kbanklive")
+  // Bank OAs to follow + watch by @handle. Defaults to OFF: findContactByUserid
+  // cannot resolve an OA basic-id, so every handle here fails, burning one
+  // rate-limited LINE call and logging one warning per handle on every boot.
+  // Defaulting this ON meant a deployment that never configured it (k8s manifest,
+  // plain `docker run`) still paid that cost and looked broken in the logs.
+  // Use BANK_OA_MIDS instead; set BANK_OA_HANDLES explicitly to opt back in.
+  const bankOaHandles = (process.env.BANK_OA_HANDLES ?? "")
     .split(",")
     .map((h) => h.trim())
     .filter((h) => h.length > 0);
+
+  // Bank-OA event filter (comma-separated, e.g. FILTER_EVENT=tx_in,tx_out).
+  // Empty/unset = forward every parsed bank event. Future event names (e.g. a
+  // balance event) plug in here without touching the filter mechanism.
+  const filterEvent = optionalEnv("FILTER_EVENT", "")
+    .split(",")
+    .map((e) => e.trim())
+    .filter((e) => e.length > 0);
 
   // Inbound HTTP API (standalone app): login + health on this port. 0 disables.
   const httpPort = optionalInt("HTTP_PORT", 3000);
@@ -145,6 +153,7 @@ export function loadConfig(): WorkerConfig {
     onix,
     bankOaHandles,
     bankOaMids,
+    filterEvent,
     httpPort,
     httpApiEnabled: httpPort > 0,
     httpApiUser: optionalEnv("HTTP_API_USER", "api"),

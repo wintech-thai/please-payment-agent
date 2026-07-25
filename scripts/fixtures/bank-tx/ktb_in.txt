@@ -1,0 +1,223 @@
+{
+  "type": "bubble",
+  "body": {
+    "type": "box",
+    "layout": "vertical",
+    "contents": [
+      {
+        "type": "image",
+        "url": "https://storage.googleapis.com/smart-engine-public-images/richMsg/Logo/wayu.png",
+        "size": "150px",
+        "position": "absolute",
+        "offsetTop": "19%",
+        "offsetStart": "26%"
+      },
+      {
+        "type": "box",
+        "layout": "horizontal",
+        "contents": [
+          {
+            "type": "text",
+            "flex": 4,
+            "text": "เงินเข้า",
+            "size": "14px",
+            "color": "#373737"
+          },
+          {
+            "type": "box",
+            "layout": "baseline",
+            "flex": 8,
+            "contents": [
+              {
+                "type": "text",
+                "flex": 13,
+                "text": "+2,000.00",
+                "size": "17px",
+                "align": "end",
+                "color": "#00a6e6",
+                "weight": "bold",
+                "wrap": true
+              },
+              {
+                "type": "text",
+                "flex": 3,
+                "text": "บาท",
+                "size": "14px",
+                "align": "end",
+                "color": "#373737"
+              }
+            ]
+          }
+        ],
+        "paddingBottom": "5px",
+        "paddingEnd": "4px"
+      },
+      {
+        "type": "box",
+        "layout": "baseline",
+        "contents": [
+          {
+            "type": "text",
+            "flex": 4,
+            "text": "ประเภท",
+            "size": "14px",
+            "color": "#373737"
+          },
+          {
+            "type": "text",
+            "flex": 8,
+            "text": "เงินโอนเข้า",
+            "size": "14px",
+            "align": "end",
+            "color": "#373737",
+            "wrap": true
+          }
+        ],
+        "paddingBottom": "10px",
+        "paddingEnd": "4px"
+      },
+      {
+        "type": "box",
+        "layout": "baseline",
+        "contents": [
+          {
+            "type": "text",
+            "flex": 4,
+            "text": "เข้าบัญชี",
+            "size": "14px",
+            "color": "#373737"
+          },
+          {
+            "type": "text",
+            "flex": 8,
+            "text": "XX3090",
+            "size": "14px",
+            "align": "end",
+            "color": "#373737",
+            "weight": "bold"
+          }
+        ],
+        "paddingBottom": "10px",
+        "paddingEnd": "4px"
+      },
+      {
+        "type": "box",
+        "layout": "baseline",
+        "contents": [
+          {
+            "type": "text",
+            "flex": 6,
+            "text": "จากบัญชี",
+            "size": "14px",
+            "color": "#373737"
+          },
+          {
+            "type": "text",
+            "flex": 8,
+            "text": "SCB XX9148",
+            "size": "14px",
+            "align": "end",
+            "color": "#373737",
+            "weight": "bold"
+          }
+        ],
+        "paddingBottom": "10px",
+        "paddingEnd": "4px"
+      },
+      {
+        "type": "box",
+        "layout": "baseline",
+        "contents": [
+          {
+            "type": "text",
+            "flex": 4,
+            "text": "ผู้โอน",
+            "size": "14px",
+            "color": "#373737"
+          },
+          {
+            "type": "text",
+            "flex": 8,
+            "text": "นาย สืบพงษ์ มนต์สา",
+            "size": "14px",
+            "align": "end",
+            "color": "#373737",
+            "weight": "bold"
+          }
+        ],
+        "paddingBottom": "10px",
+        "paddingEnd": "4px"
+      },
+      {
+        "type": "box",
+        "layout": "horizontal",
+        "contents": [
+          {
+            "type": "text",
+            "flex": 4,
+            "text": "ยอดที่ใช้ได้",
+            "size": "14px",
+            "color": "#373737",
+            "wrap": true
+          },
+          {
+            "type": "box",
+            "layout": "baseline",
+            "flex": 8,
+            "contents": [
+              {
+                "type": "text",
+                "flex": 13,
+                "text": "3,234.75",
+                "size": "14px",
+                "align": "end",
+                "color": "#373737",
+                "wrap": true
+              },
+              {
+                "type": "text",
+                "flex": 3,
+                "text": "บาท",
+                "size": "14px",
+                "align": "end",
+                "color": "#373737"
+              }
+            ]
+          }
+        ],
+        "paddingBottom": "10px",
+        "paddingEnd": "4px"
+      },
+      {
+        "type": "box",
+        "layout": "baseline",
+        "contents": [
+          {
+            "type": "text",
+            "flex": 6,
+            "text": "วันที่ทำรายการ",
+            "size": "14px",
+            "color": "#373737"
+          },
+          {
+            "type": "text",
+            "flex": 6,
+            "text": "25/07/69 16:35",
+            "size": "14px",
+            "align": "end",
+            "color": "#373737",
+            "wrap": true
+          }
+        ],
+        "paddingBottom": "10px",
+        "paddingEnd": "4px"
+      }
+    ],
+    "background": {
+      "type": "linearGradient",
+      "angle": "0deg",
+      "startColor": "#cee4ef",
+      "endColor": "#edf8fe"
+    }
+  }
+}
