@@ -47,10 +47,14 @@ ARG GIT_COMMIT=unknown
 ARG GIT_BRANCH=unknown
 ARG BUILD_TIME=unknown
 ARG GIT_DIRTY=0
+# CI already passes `version` (the image tag); accept it so it isn't silently
+# dropped, and report it as the app version on /status.
+ARG version=2.0.0
 ENV GIT_COMMIT=$GIT_COMMIT
 ENV GIT_BRANCH=$GIT_BRANCH
 ENV BUILD_TIME=$BUILD_TIME
 ENV GIT_DIRTY=$GIT_DIRTY
+ENV npm_package_version=$version
 
 # Environment defaults (override at runtime via env / .env)
 ENV NODE_ENV=production

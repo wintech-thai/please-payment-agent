@@ -58,12 +58,23 @@ jobs:
 
         DOCKERFILE=Dockerfile
 
+        # Source ref this image is built from — baked into the image so GET /status
+        # can report it. A tag build reports the tag; a branch build, the branch.
+        if [[ $GITHUB_REF == refs/tags/* ]]; then
+          SOURCE_REF=${GITHUB_REF#refs/tags/}
+        else
+          SOURCE_REF=${GITHUB_REF#refs/heads/}
+        fi
+        BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
         echo ::set-output name=tags::${TAGS}
         echo ::set-output name=gcr_tags::${GCR_TAGS}
         echo ::set-output name=version::${VERSION}
         echo ::set-output name=deployEnv::${ENV}
         echo ::set-output name=autoDeployBranch::${DEPLOYMENT_BRANCH}
         echo ::set-output name=dockerFile::${DOCKERFILE}
+        echo ::set-output name=sourceRef::${SOURCE_REF}
+        echo ::set-output name=buildTime::${BUILD_TIME}
 
     - name: Slack notification start
       uses: 8398a7/action-slack@v3
@@ -99,7 +110,14 @@ jobs:
         push: true
         load: false
         tags: ${{ steps.prep.outputs.gcr_tags }}
-        build-args: version=${{ steps.prep.outputs.version }}
+        # GIT_* stamp the image so GET /status reports the deployed commit/branch
+        # instead of "unknown" — without these a running pod cannot be matched
+        # back to its source.
+        build-args: |
+          version=${{ steps.prep.outputs.version }}
+          GIT_COMMIT=${{ github.sha }}
+          GIT_BRANCH=${{ steps.prep.outputs.sourceRef }}
+          BUILD_TIME=${{ steps.prep.outputs.buildTime }}
 
     - name: Slack notification end
       if: always()
