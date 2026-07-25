@@ -124,7 +124,13 @@ async function ensureBankOaWatched(config: WorkerConfig): Promise<void> {
         .catch(() => null);
       const mid = contact?.mid;
       if (!mid) {
-        logger.warn("Bank OA handle did not resolve to a contact", { handle });
+        // Expected for OA basic-ids — findContactByUserid searches user LINE IDs.
+        // Say so, so this doesn't read as a transient failure worth retrying.
+        logger.warn("Bank OA handle did not resolve to a contact", {
+          handle,
+          why: "findContactByUserid cannot resolve OA @basic-ids",
+          fix: "use BANK_OA_MIDS with the OA's mid, and unset BANK_OA_HANDLES",
+        });
         continue;
       }
       if (getWatched(mid)) continue; // already watched — idempotent skip

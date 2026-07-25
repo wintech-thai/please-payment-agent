@@ -102,13 +102,13 @@ export function loadConfig(): WorkerConfig {
     timeoutMs: optionalInt("ONIX_FORWARD_TIMEOUT_MS", 5000),
   };
 
-  // Bank OAs the worker follows + watches by @handle. Defaults to the three Thai
-  // bank OAs, but an explicitly-set empty value turns it OFF — `optionalEnv` would
-  // hand back the default instead, leaving no way to stop the boot-time lookups.
-  // That matters because @handle resolution (findContactByUserid) does not work
-  // for OA basic-ids: it burns a rate-limited LINE call per handle and warns every
-  // boot. Prefer BANK_OA_MIDS, then set BANK_OA_HANDLES= to silence this path.
-  const bankOaHandles = (process.env.BANK_OA_HANDLES ?? "@scbconnect,@krungthaiconnext,@kbanklive")
+  // Bank OAs to follow + watch by @handle. Defaults to OFF: findContactByUserid
+  // cannot resolve an OA basic-id, so every handle here fails, burning one
+  // rate-limited LINE call and logging one warning per handle on every boot.
+  // Defaulting this ON meant a deployment that never configured it (k8s manifest,
+  // plain `docker run`) still paid that cost and looked broken in the logs.
+  // Use BANK_OA_MIDS instead; set BANK_OA_HANDLES explicitly to opt back in.
+  const bankOaHandles = (process.env.BANK_OA_HANDLES ?? "")
     .split(",")
     .map((h) => h.trim())
     .filter((h) => h.length > 0);
