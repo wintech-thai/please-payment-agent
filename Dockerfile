@@ -54,9 +54,12 @@ USER bun
 # Standalone app container listens on port 3000
 EXPOSE 3000
 
-# Health check: verify the bun process is alive
+# Health check: hit the inbound HTTP API. `pgrep` is NOT in bun:1-slim (the old
+# check failed with "pgrep: not found", so every container reported unhealthy);
+# curl is installed above and /health is unauthenticated. HTTP_PORT=0 disables
+# the server, so treat that case as healthy rather than failing forever.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-  CMD pgrep -f "bun" > /dev/null || exit 1
+  CMD [ "${HTTP_PORT:-3000}" = "0" ] || curl -fsS "http://127.0.0.1:${HTTP_PORT:-3000}/health" > /dev/null || exit 1
 
 # Bun runs TypeScript directly — no build step needed
 CMD ["bun", "run", "src/index.ts"]

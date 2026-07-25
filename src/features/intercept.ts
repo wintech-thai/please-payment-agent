@@ -69,17 +69,41 @@ export function redactRaw(raw: unknown): unknown {
 export function createInterceptFeature(config: WorkerConfig): Feature {
   // Attach the raw-message listener immediately — there is no global init()
   // hook in the event router, so registration happens here.
+  /**
+   * Every reason a message is dropped, logged at debug. Without this the whole
+   * "message arrived but nothing was forwarded" case is invisible even at
+   * LOG_LEVEL=debug, which is exactly when someone is trying to diagnose it.
+   */
+  const drop = (reason: string, msg: RawMessage, extra?: Record<string, unknown>): void => {
+    logger.debug("Intercept skip", {
+      reason,
+      chatId: msg.chatId,
+      messageId: msg.id,
+      contentType: contentTypeLabel(msg.contentType),
+      ...extra,
+    });
+  };
+
   onRawMessage(async (msg: RawMessage) => {
-    if (!isLoaded()) return;
+    if (!isLoaded()) return drop("watched-registry not loaded", msg);
 
     // For direct chats (user/OA), forward only what the remote side sent.
-    if (msg.chatId.startsWith("u") && msg.isOwnMessage) return;
+    if (msg.chatId.startsWith("u") && msg.isOwnMessage) {
+      return drop("own message in direct chat", msg);
+    }
 
     // Skip bot commands — never forward them
-    if (msg.text.startsWith(config.commandPrefix)) return;
+    if (msg.text.startsWith(config.commandPrefix)) {
+      return drop("bot command", msg);
+    }
 
     const watched = getWatched(msg.chatId);
-    if (!watched || !watched.enabled) return;
+    if (!watched) {
+      return drop("chat not watched — add it to WATCH_CHAT_IDS/BANK_OA_MIDS", msg);
+    }
+    if (!watched.enabled) {
+      return drop("watched chat disabled", msg, { chatName: watched.chatName });
+    }
 
     // Apply message filter (only when text is non-empty; media/stickers bypass)
     if (watched.filterType && watched.filterType !== "none" && msg.text) {
@@ -98,7 +122,12 @@ export function createInterceptFeature(config: WorkerConfig): Feature {
           passes = true; // invalid/null regex → fail-open
         }
       }
-      if (!passes) return;
+      if (!passes) {
+        return drop("filter rejected", msg, {
+          filterType: watched.filterType,
+          filterPattern: watched.filterPattern,
+        });
+      }
     }
 
     const payload: ForwardedMessage = {
@@ -119,7 +148,24 @@ export function createInterceptFeature(config: WorkerConfig): Feature {
     targets.push(...await getWebhookTargets());
     if (config.webhookUrl) targets.push(config.webhookUrl);
 
+    if (targets.length === 0) {
+      // Watched + passed every check, but nowhere to send it — the single most
+      // confusing standalone misconfiguration (WEBHOOK_URL unset).
+      logger.warn("Intercept: no forward target configured (set WEBHOOK_URL)", {
+        chatId: msg.chatId,
+        messageId: msg.id,
+      });
+    }
+
     try {
+      logger.debug("Intercept forwarding", {
+        chatId: msg.chatId,
+        chatName: watched.chatName,
+        chatType: watched.chatType,
+        messageId: msg.id,
+        contentType: payload.contentType,
+        targets: targets.length,
+      });
       await fanOut(targets, payload);
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -134,6 +180,19 @@ export function createInterceptFeature(config: WorkerConfig): Feature {
     // NotifyLineMessage carries `title` + `text`, so a message with no text
     // (media/sticker) has nothing to deliver — skip it, but log rather than
     // drop silently so an all-media OA is diagnosable.
+    if (!isOnixEnabled()) {
+      logger.debug("onix skip: not configured (ONIX_API_URL/AGENT_ID/API_KEY)", {
+        chatId: msg.chatId,
+        messageId: msg.id,
+      });
+    } else if (watched.chatType !== "oa") {
+      logger.debug("onix skip: chat is not an OA — onix only takes chatType 'oa'", {
+        chatId: msg.chatId,
+        messageId: msg.id,
+        chatType: watched.chatType,
+      });
+    }
+
     if (isOnixEnabled() && watched.chatType === "oa") {
       if (msg.text.trim().length === 0) {
         logger.debug("onix skip: watched OA message has no text", {
