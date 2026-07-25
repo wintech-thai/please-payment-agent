@@ -44,7 +44,9 @@ so you set the target group once:
 1. Log in (test 1 or 2).
 2. Send a message in the target group.
 3. Find its chat id (starts with `c`): `docker compose logs worker | grep -i chatid`
-   or look in `../logs` (RAW_OP_LOG is on, so even un-watched chats are captured).
+   or look in `logs/log-DD-MM-YYYY.log` — RAW_OP_LOG writes raw ops to that **file only**
+   (never stdout), so even un-watched chats are captured, with MIDs annotated by name:
+   `grep -oE '"(to|from)":"u[0-9a-f]{32}"' logs/log-*.log | sort -u`
 4. Put it in `.env`: `WATCH_CHAT_IDS=c<...>` (comma-separate multiple).
 5. `docker compose up -d` to apply.
 6. Send another message in that group → it appears in the **section 3** feed with the full raw

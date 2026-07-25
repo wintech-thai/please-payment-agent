@@ -161,9 +161,17 @@ WATCH_CHAT_IDS=u4ca19114ed596ee2f4e63335ec7143fb,c1234...
 
 หรือ runtime (ไม่ต้อง restart): จาก account ที่ login พิมพ์ `!watch add <mid>` ในแชทไหนก็ได้.
 
-**หา mid ของ OA/กลุ่ม:** เปิด `RAW_OP_LOG=1` แล้วส่ง/รับข้อความหนึ่งครั้ง — chatId จะโผล่ใน log แม้ยังไม่ watch:
+**หา mid ของ OA/กลุ่ม:** เปิด `RAW_OP_LOG=1` แล้วส่ง/รับข้อความหนึ่งครั้ง — op จะถูกบันทึกแม้ยังไม่ watch.
+
+⚠️ `RAW_OP_LOG` เขียนลง **ไฟล์เท่านั้น** (`./logs/log-DD-MM-YYYY.log`) — **ไม่ออก console** และไม่ขึ้นกับ `LOG_LEVEL`:
 
 ```bash
+# 1) จากไฟล์ raw op (แหล่งหลัก — mid ถูก annotate ชื่อให้ด้วย)
+grep -oE '"(to|from)":"u[0-9a-f]{32}"' logs/log-*.log | sort -u
+grep -o '"param1":"u[^"]*"' logs/log-*.log | sort -u
+# → "param1":"u4ca19114ed596ee2f4e63335ec7143fb (SCB Connect)"
+
+# 2) จาก console (เฉพาะข้อความที่ไม่ใช่ text — log นี้ถูกปลดล็อกโดย RAW_OP_LOG=1)
 docker compose logs worker | grep -iE 'chatId'
 # ...{"chatId":"u4ca19114ed596ee2f4e63335ec7143fb","contentType":"FLEX",...}
 ```
@@ -293,9 +301,14 @@ REDIS_PORT=6379
 REDIS_KEY_PREFIX=                # default rlbotline:${INSTANCE_ID}
 
 # --- watch bank OA / chats ---
-BANK_OA_HANDLES=@scbconnect,@krungthaiconnext,@kbanklive
+BANK_OA_MIDS=                    # mid ของ bank OA (verified — ไม่ auto-follow) §3.1b
+BANK_OA_HANDLES=@scbconnect,@krungthaiconnext,@kbanklive   # @handle resolve ไม่ได้ (ดู §3.1)
 WATCH_CHAT_IDS=                  # fallback: watch มือ (comma-separated)
-RAW_OP_LOG=1                     # ช่วยหา chatId ของ OA/กลุ่ม
+
+# --- logging ---
+LOG_LEVEL=debug                  # console: debug/info/warn/error (default info)
+RAW_OP_LOG=1                     # raw op → ไฟล์ ./logs/ เท่านั้น (ไม่ออก console)
+RAW_OP_LOG_DIR=/app/logs
 
 # --- webhook: generic ---
 WEBHOOK_URL=http://poc-app:8080/ingest

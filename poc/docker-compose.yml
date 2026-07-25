@@ -33,7 +33,9 @@ services:
       - ONIX_ORG=global
       - ONIX_AGENT_ID=${ONIX_AGENT_ID:-00000000-0000-0000-0000-000000000001}
       - ONIX_API_KEY=${ONIX_API_KEY:-apikey}
-      - RAW_OP_LOG=1             # so unwatched chatIds still show up in ../logs for discovery
+      # Full-log mode: LOG_LEVEL=debug + RAW_OP_LOG=1 (see poc/.env).
+      - LOG_LEVEL=${LOG_LEVEL:-debug}
+      - RAW_OP_LOG=${RAW_OP_LOG:-1}   # dump every raw sync() op → FILE only (/app/logs), never stdout
       - RAW_OP_LOG_DIR=/app/logs
     volumes:
       - ../logs:/app/logs
