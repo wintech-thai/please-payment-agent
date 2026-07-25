@@ -35,6 +35,7 @@ import {
   safeReadBody,
 } from "./http-log.js";
 import type { OnixConfig } from "../types.js";
+import type { BankTx } from "./bank-tx.js";
 
 /** Constant envelope fields for a LINE-sourced notification (see onix examples). */
 const SOURCE_TYPE = "NOTIFICATION";
@@ -48,6 +49,13 @@ export interface OnixNotifyInput {
   title: string;
   /** Message body → onix `text`. */
   text: string;
+  /**
+   * Parsed bank transaction, sent alongside `text` when available. onix's
+   * NotifyLineMessage takes a Dictionary<string, object> and stores the whole
+   * body verbatim as InputData, so extra keys are safe — onix reads
+   * `InputData.bankTx` instead of re-parsing the flex.
+   */
+  bankTx?: BankTx;
 }
 
 export interface OnixResult {
@@ -108,6 +116,7 @@ export async function notifyLineMessage(input: OnixNotifyInput): Promise<OnixRes
     sourceLabel: SOURCE_LABEL,
     title: input.title,
     text: input.text,
+    ...(input.bankTx ? { bankTx: input.bankTx } : {}),
   });
 
   const url = resolveEndpoint(cfg);

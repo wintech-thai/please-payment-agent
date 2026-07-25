@@ -72,7 +72,9 @@ sequenceDiagram
 
 ข้อความ OA ที่ parse ได้จะแนบ field `bankTx` ไปกับ payload ของ generic forward **เสมอ**
 (ไม่เกี่ยวกับว่าตั้ง `FILTER_EVENT` หรือไม่) — field เดิมทั้งหมดรวมทั้ง `text` (string) และ
-`raw` (wire struct หลัง redact) ยังส่งครบเหมือนเดิม; ฝั่ง onix ยังส่ง `{title, text}` ตาม contract เดิม.
+`raw` (wire struct หลัง redact) ยังส่งครบเหมือนเดิม; ฝั่ง onix ส่ง `{title, text}` เดิม **+ `bankTx`**
+เมื่อ parse ได้ (endpoint ฝั่งนั้นรับ `Dictionary<string, object>` และเก็บทั้ง body ลง `InputData`
+ตรง ๆ — key เพิ่มจึงปลอดภัย, onix อ่าน `InputData.bankTx` แทนการ parse flex เอง).
 `bankTx` มีแต่ field แบน ๆ (string/number) — **ไม่มี** flex object ซ้อนข้างใน (ตัว flex ยังอยู่ที่
 `text` ของ payload หลักตามเดิม) เพื่อไม่ให้ webhook server เดิมที่ parse payload พังจาก nested object:
 
