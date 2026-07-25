@@ -160,6 +160,66 @@ async function ensureBankOaWatched(config: WorkerConfig): Promise<void> {
 }
 
 /**
+ * Watch the configured bank-OA MIDs (`config.bankOaMids`) — but ONLY the ones the
+ * account has already added as a contact. Each present MID is watched as `oa` with
+ * its real display name; a MID that is not in the contact list is skipped and never
+ * auto-followed, so the customer must add that OA themselves. Idempotent + best-effort.
+ */
+async function ensureConfiguredOaWatched(config: WorkerConfig): Promise<void> {
+  if (config.bankOaMids.length === 0) return;
+  const client = getClient();
+  const selfMid = await getBotMid().catch(() => "");
+
+  // The account's actual contacts (friends + added OAs). A MID absent here has not
+  // been added, so we must neither watch nor follow it.
+  let contactIds: string[] = [];
+  try {
+    contactIds = await client.base.talk.getAllContactIds({ syncReason: "INTERNAL" });
+  } catch (err) {
+    logger.warn("Configured OA watch: getAllContactIds failed — skipping all", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return;
+  }
+  const contactSet = new Set(contactIds);
+
+  const present = config.bankOaMids.filter((mid) => contactSet.has(mid));
+  for (const mid of config.bankOaMids) {
+    if (!contactSet.has(mid)) {
+      logger.warn("Configured OA not in contacts — skipped (customer must add it)", { mid });
+    }
+  }
+  if (present.length === 0) return;
+
+  // Resolve display names in one batch so watched OAs carry a human-readable title.
+  const nameByMid = new Map<string, string>();
+  try {
+    const contacts = (await client.base.talk.getContacts({ mids: present })) as Array<{
+      mid?: string;
+      displayName?: string;
+    }>;
+    for (const c of contacts) {
+      if (c.mid && c.displayName) nameByMid.set(c.mid, c.displayName);
+    }
+  } catch {
+    // names are best-effort — fall back to the MID below
+  }
+
+  for (const mid of present) {
+    if (getWatched(mid)) continue; // idempotent — already watched
+    const name = nameByMid.get(mid) ?? mid;
+    await addWatched({
+      chatId: mid,
+      chatName: name,
+      chatType: "oa",
+      enabled: true,
+      addedBy: selfMid || "system",
+    });
+    logger.info("Configured OA watched (verified contact)", { mid, name });
+  }
+}
+
+/**
  * Main bootstrap function.
  */
 async function main(): Promise<void> {
@@ -276,6 +336,14 @@ async function main(): Promise<void> {
   // limiter, so it's safe to run on every boot.
   ensureBankOaWatched(config).catch((err) => {
     logger.warn("Bank OA onboarding failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  });
+
+  // ── Step 6d: Watch configured bank-OA MIDs that the account already added ──
+  // Verified (never auto-follows). Missing MIDs are skipped for the customer to add.
+  ensureConfiguredOaWatched(config).catch((err) => {
+    logger.warn("Configured OA watch failed", {
       error: err instanceof Error ? err.message : String(err),
     });
   });

@@ -79,6 +79,13 @@ export function loadConfig(): WorkerConfig {
     .map((id) => id.trim())
     .filter((id) => id.length > 0);
 
+  // Bank OA MIDs to watch — verified against the account's contacts at boot and
+  // watched as `oa` only if already added (never auto-followed). See §config.
+  const bankOaMids = optionalEnv("BANK_OA_MIDS", "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter((id) => id.length > 0);
+
   // onix (destination server) forward target. Enabled only when the URL, agent
   // id and key are all present, so an unconfigured worker simply skips onix.
   const onixApiUrl = optionalTrimmedEnv("ONIX_API_URL")?.replace(/\/+$/, "");
@@ -135,6 +142,7 @@ export function loadConfig(): WorkerConfig {
     pinWaitTimeoutMs: optionalInt("PIN_WAIT_TIMEOUT_MS", 300000),
     onix,
     bankOaHandles,
+    bankOaMids,
     httpPort,
     httpApiEnabled: httpPort > 0,
     httpApiUser: optionalEnv("HTTP_API_USER", "api"),

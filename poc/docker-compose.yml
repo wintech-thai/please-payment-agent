@@ -25,14 +25,14 @@ services:
       - HTTP_API_KEY=${HTTP_API_KEY:-poc-secret}
       - INSTANCE_ID=${INSTANCE_ID:-poc-001}
       - API_BASE_URL=            # empty → fully standalone
-      - WATCH_CHAT_IDS=${WATCH_CHAT_IDS:-}
+      # WATCH_CHAT_IDS + BANK_OA_HANDLES come straight from env_file (.env) so an
+      # explicit empty value is respected (no `:-` default overriding it).
       - WEBHOOK_URL=http://poc-app:8080/ingest
       # ONIX bank-OA sink → simulated by poc-app. All three enable it.
       - ONIX_API_URL=http://poc-app:8080
       - ONIX_ORG=global
       - ONIX_AGENT_ID=${ONIX_AGENT_ID:-00000000-0000-0000-0000-000000000001}
       - ONIX_API_KEY=${ONIX_API_KEY:-apikey}
-      - BANK_OA_HANDLES=${BANK_OA_HANDLES:-@scbconnect,@krungthaiconnext,@kbanklive}
       - RAW_OP_LOG=1             # so unwatched chatIds still show up in ../logs for discovery
       - RAW_OP_LOG_DIR=/app/logs
     volumes:

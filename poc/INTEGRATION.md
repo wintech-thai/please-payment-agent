@@ -130,6 +130,26 @@ BANK_OA_HANDLES=@scbconnect,@krungthaiconnext,@kbanklive
 > (restore session จาก Redis, ไม่ login ใหม่) — รอบนี้ resolve เจอ → follow + watch เป็น `chatType:"oa"`
 > → เข้า path ONIX (§4.2) ได้.
 
+### 3.1b Verified OA watch — `BANK_OA_MIDS` (แนะนำสำหรับ bank OA)
+
+เพราะ §3.1 (`@handle`) resolve ไม่ได้ ใช้ **mid** ตรงๆ แทน — worker จะ **ตรวจว่า mid นั้น account add ไว้จริงไหม**
+ก่อน watch (ไม่ auto-follow):
+
+```dotenv
+BANK_OA_MIDS=u4ca19114ed596ee2f4e63335ec7143fb,u8cc52e369d2bca4a5ce8c506170c712e,uce372f6ada1d1a0855973fefc2942f9a
+```
+
+ตอน boot `ensureConfiguredOaWatched()` ทำ: `getAllContactIds()` → ถ้า mid **อยู่ใน contact** → watch เป็น
+`chatType:"oa"` + ชื่อจริง (เข้า ONIX §4.2 ได้); ถ้า **ไม่อยู่** → ข้าม (ไม่ watch, ไม่ add — ให้ลูกค้า add เอง).
+log ที่เห็น:
+
+```
+Configured OA watched (verified contact)   {"mid":"u4ca19114...","name":"SCB Connect"}   ← ยืนยันว่า mid = ธนาคารไหน
+Configured OA not in contacts — skipped (customer must add it)   {"mid":"u8cc52e..."}      ← ยังไม่ได้ add
+```
+
+> ได้ mid มาจาก log ตอน OA ส่งข้อความ: `docker compose logs worker | grep -oE '"chatId":"u[0-9a-f]{32}"' | sort -u`
+
 ### 3.2 Watch มือ (fallback) — `WATCH_CHAT_IDS` หรือ `!watch add`
 
 ถ้าไม่อยากพึ่ง auto-resolve หรืออยาก watch แชท/กลุ่มอื่น:

@@ -80,6 +80,27 @@ flowchart TD
   ซึ่งมี standalone branch (เขียน in-memory cache ตรง ไม่ผ่าน `/state/watched-chats`) ดังนั้น bank-OA → onix
   ทำงานได้ครบแม้ไม่มี Central API เลย — ไม่ต้องพึ่ง §3b ด้านล่าง
 
+## 3a. Verified OA watch — `BANK_OA_MIDS` (ไม่ auto-follow)
+
+ทางที่เชื่อถือได้กว่า §3 (เพราะ `findContactByUserid` resolve `@handle` ของ OA ไม่ได้): ตั้ง **mid** ตรงๆ
+ผ่าน env `BANK_OA_MIDS` (comma-separated `u...`). ตอน boot `ensureConfiguredOaWatched()`
+([../src/index.ts](../src/index.ts)) จะ:
+
+```mermaid
+flowchart TD
+  A["BANK_OA_MIDS (u...,u...)"] --> B["getAllContactIds() → contact ทั้งหมดของ account"]
+  B --> C{"mid อยู่ใน contact?"}
+  C -->|"ไม่มี"| S["log warn → ข้าม (ไม่ watch, ไม่ addFriend — ลูกค้า add เอง)"]
+  C -->|"มี"| D["getContacts([mid]) → displayName"]
+  D --> E["addWatched({chatId: mid, chatType: 'oa', chatName: displayName, enabled: true})"]
+```
+
+ต่างจาก §3 (`BANK_OA_HANDLES`) ตรงที่ **ไม่ auto-follow** — watch เฉพาะ OA ที่ account **add ไว้แล้ว**;
+mid ที่ยังไม่ได้ add จะถูกข้ามพร้อม log `"Configured OA not in contacts — skipped (customer must add it)"`.
+OA ที่ watch สำเร็จเป็น `chatType:"oa"` → เข้า path onix (§4) ได้ และ log จะพิมพ์ชื่อจริงของ OA
+(`"Configured OA watched (verified contact)"` พร้อม `name`) ใช้ยืนยันว่า mid ตรงกับธนาคารที่ต้องการ.
+idempotent + best-effort (network fail = ข้ามทั้งหมด ไม่ล้ม boot).
+
 ## 3b. Standalone watch — `WATCH_CHAT_IDS` (ไม่มี Central API)
 
 เมื่อ `API_BASE_URL` ไม่ได้ตั้ง (`centralApiEnabled = false`) worker จะ **ไม่** query `/state/watched-chats`

@@ -344,6 +344,13 @@ export interface WorkerConfig {
   onix: OnixConfig;
   /** LINE @handles of bank OAs to follow + watch (e.g. ["@scbconnect", "@krungthaiconnext", "@kbanklive"]). */
   bankOaHandles: string[];
+  /**
+   * Bank OA MIDs to watch (`BANK_OA_MIDS`, comma-separated `u...`). Unlike
+   * `bankOaHandles`, these are verified against the account's contacts at boot
+   * and watched as `oa` ONLY if already added — never auto-followed. A MID the
+   * account has not added is skipped (the customer adds it themselves).
+   */
+  bankOaMids: string[];
   /** Inbound HTTP API port (login + health). 0 disables the server. */
   httpPort: number;
   /** True when httpPort > 0 — this standalone app exposes an inbound HTTP API. */
