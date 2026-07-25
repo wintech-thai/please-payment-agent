@@ -12,6 +12,15 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+      # Stamp the image with its source commit so GET /status can report exactly
+      # what is deployed. Populate from the shell at build time:
+      #   GIT_COMMIT=$(git rev-parse HEAD) GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD) \
+      #   BUILD_TIME=$(date -u +%FT%TZ) docker compose up --build -d
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+        GIT_BRANCH: ${GIT_BRANCH:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+        GIT_DIRTY: ${GIT_DIRTY:-0}
     restart: unless-stopped
     depends_on:
       - redis
@@ -25,15 +34,17 @@ services:
       - HTTP_API_KEY=${HTTP_API_KEY:-poc-secret}
       - INSTANCE_ID=${INSTANCE_ID:-poc-001}
       - API_BASE_URL=            # empty → fully standalone
-      - WATCH_CHAT_IDS=${WATCH_CHAT_IDS:-}
+      # WATCH_CHAT_IDS + BANK_OA_HANDLES come straight from env_file (.env) so an
+      # explicit empty value is respected (no `:-` default overriding it).
       - WEBHOOK_URL=http://poc-app:8080/ingest
       # ONIX bank-OA sink → simulated by poc-app. All three enable it.
       - ONIX_API_URL=http://poc-app:8080
       - ONIX_ORG=global
       - ONIX_AGENT_ID=${ONIX_AGENT_ID:-00000000-0000-0000-0000-000000000001}
       - ONIX_API_KEY=${ONIX_API_KEY:-apikey}
-      - BANK_OA_HANDLES=${BANK_OA_HANDLES:-@scbconnect,@krungthaiconnext,@kbanklive}
-      - RAW_OP_LOG=1             # so unwatched chatIds still show up in ../logs for discovery
+      # Full-log mode: LOG_LEVEL=debug + RAW_OP_LOG=1 (see poc/.env).
+      - LOG_LEVEL=${LOG_LEVEL:-debug}
+      - RAW_OP_LOG=${RAW_OP_LOG:-1}   # dump every raw sync() op → FILE only (/app/logs), never stdout
       - RAW_OP_LOG_DIR=/app/logs
     volumes:
       - ../logs:/app/logs

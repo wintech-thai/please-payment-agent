@@ -79,6 +79,13 @@ export function loadConfig(): WorkerConfig {
     .map((id) => id.trim())
     .filter((id) => id.length > 0);
 
+  // Bank OA MIDs to watch — verified against the account's contacts at boot and
+  // watched as `oa` only if already added (never auto-followed). See §config.
+  const bankOaMids = optionalEnv("BANK_OA_MIDS", "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter((id) => id.length > 0);
+
   // onix (destination server) forward target. Enabled only when the URL, agent
   // id and key are all present, so an unconfigured worker simply skips onix.
   const onixApiUrl = optionalTrimmedEnv("ONIX_API_URL")?.replace(/\/+$/, "");
@@ -95,11 +102,13 @@ export function loadConfig(): WorkerConfig {
     timeoutMs: optionalInt("ONIX_FORWARD_TIMEOUT_MS", 5000),
   };
 
-  // Bank OAs the worker follows + watches. Defaults to the three Thai bank OAs.
-  const bankOaHandles = optionalEnv(
-    "BANK_OA_HANDLES",
-    "@scbconnect,@krungthaiconnext,@kbanklive",
-  )
+  // Bank OAs the worker follows + watches by @handle. Defaults to the three Thai
+  // bank OAs, but an explicitly-set empty value turns it OFF — `optionalEnv` would
+  // hand back the default instead, leaving no way to stop the boot-time lookups.
+  // That matters because @handle resolution (findContactByUserid) does not work
+  // for OA basic-ids: it burns a rate-limited LINE call per handle and warns every
+  // boot. Prefer BANK_OA_MIDS, then set BANK_OA_HANDLES= to silence this path.
+  const bankOaHandles = (process.env.BANK_OA_HANDLES ?? "@scbconnect,@krungthaiconnext,@kbanklive")
     .split(",")
     .map((h) => h.trim())
     .filter((h) => h.length > 0);
@@ -135,6 +144,7 @@ export function loadConfig(): WorkerConfig {
     pinWaitTimeoutMs: optionalInt("PIN_WAIT_TIMEOUT_MS", 300000),
     onix,
     bankOaHandles,
+    bankOaMids,
     httpPort,
     httpApiEnabled: httpPort > 0,
     httpApiUser: optionalEnv("HTTP_API_USER", "api"),

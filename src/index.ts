@@ -13,6 +13,7 @@
 
 import { loadConfig } from "./core/config.js";
 import { configureLogger, logger } from "./core/logger.js";
+import { getBuildInfo } from "./core/build-info.js";
 import { initDatabase, pruneMessages, closeDatabase } from "./core/database.js";
 import { configureStateClient } from "./core/state-client.js";
 import {
@@ -160,6 +161,66 @@ async function ensureBankOaWatched(config: WorkerConfig): Promise<void> {
 }
 
 /**
+ * Watch the configured bank-OA MIDs (`config.bankOaMids`) — but ONLY the ones the
+ * account has already added as a contact. Each present MID is watched as `oa` with
+ * its real display name; a MID that is not in the contact list is skipped and never
+ * auto-followed, so the customer must add that OA themselves. Idempotent + best-effort.
+ */
+async function ensureConfiguredOaWatched(config: WorkerConfig): Promise<void> {
+  if (config.bankOaMids.length === 0) return;
+  const client = getClient();
+  const selfMid = await getBotMid().catch(() => "");
+
+  // The account's actual contacts (friends + added OAs). A MID absent here has not
+  // been added, so we must neither watch nor follow it.
+  let contactIds: string[] = [];
+  try {
+    contactIds = await client.base.talk.getAllContactIds({ syncReason: "INTERNAL" });
+  } catch (err) {
+    logger.warn("Configured OA watch: getAllContactIds failed — skipping all", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return;
+  }
+  const contactSet = new Set(contactIds);
+
+  const present = config.bankOaMids.filter((mid) => contactSet.has(mid));
+  for (const mid of config.bankOaMids) {
+    if (!contactSet.has(mid)) {
+      logger.warn("Configured OA not in contacts — skipped (customer must add it)", { mid });
+    }
+  }
+  if (present.length === 0) return;
+
+  // Resolve display names in one batch so watched OAs carry a human-readable title.
+  const nameByMid = new Map<string, string>();
+  try {
+    const contacts = (await client.base.talk.getContacts({ mids: present })) as Array<{
+      mid?: string;
+      displayName?: string;
+    }>;
+    for (const c of contacts) {
+      if (c.mid && c.displayName) nameByMid.set(c.mid, c.displayName);
+    }
+  } catch {
+    // names are best-effort — fall back to the MID below
+  }
+
+  for (const mid of present) {
+    if (getWatched(mid)) continue; // idempotent — already watched
+    const name = nameByMid.get(mid) ?? mid;
+    await addWatched({
+      chatId: mid,
+      chatName: name,
+      chatType: "oa",
+      enabled: true,
+      addedBy: selfMid || "system",
+    });
+    logger.info("Configured OA watched (verified contact)", { mid, name });
+  }
+}
+
+/**
  * Main bootstrap function.
  */
 async function main(): Promise<void> {
@@ -171,13 +232,32 @@ async function main(): Promise<void> {
   logger.info("═══════════════════════════════════════════════");
   logger.info("  rlbotline Worker starting up");
   logger.info("═══════════════════════════════════════════════");
+  // First line worth reading in an incident: which code is actually running.
+  logger.info("Build", { ...getBuildInfo() });
   logger.info("Configuration loaded", {
     instanceId: config.instanceId,
     botName: config.botName,
     device: config.device,
     commandPrefix: config.commandPrefix,
+    logLevel: config.logLevel,
     apiBaseUrl: config.apiBaseUrl ?? "(standalone — no Central API)",
     redis: config.redis.enabled,
+    httpPort: config.httpPort,
+    httpAuth: config.httpApiKey ? "basic" : "NONE (open)",
+  });
+
+  // Every downstream in one record, so "is X wired up?" never needs a code read.
+  logger.info("Integrations", {
+    sessionStore: config.redis.enabled ? `redis (${config.redis.keyPrefix})` : "memory (NOT persisted)",
+    forwardSink: config.webhookUrl ?? "(none — watched messages have nowhere to go)",
+    forwardSigning: config.watchHmacSecret ? "hmac-sha256" : "disabled",
+    onix: config.onix.enabled
+      ? `${config.onix.apiUrl} org=${config.onix.org} agent=${config.onix.agentId}`
+      : "disabled (needs ONIX_API_URL + ONIX_AGENT_ID + ONIX_API_KEY)",
+    centralApi: config.apiBaseUrl ?? "disabled",
+    watchChatIds: config.watchChatIds.length,
+    bankOaMids: config.bankOaMids.length,
+    bankOaHandles: config.bankOaHandles.length,
   });
 
   // When false, the worker runs fully standalone: session → Redis, watched chats
@@ -210,6 +290,12 @@ async function main(): Promise<void> {
   // (defaults to /webhooks/forward), used by the intercept fan-out.
   // Empty URL in standalone mode ⇒ sendWebhookEvent no-ops cleanly (no status plane).
   configureWebhook(central ? `${config.apiBaseUrl}/webhooks/worker` : "", config.instanceId);
+  logger.info("Status webhook configured", {
+    url: central ? `${config.apiBaseUrl}/webhooks/worker` : "(none — standalone, status events dropped)",
+    // Named apart from the forward sink on purpose: two different URLs that get
+    // confused constantly ("I set WEBHOOK_URL, why no status events?").
+    note: "status plane only — message forwarding uses WEBHOOK_URL",
+  });
 
   // ── Step 4b: Initialize Forwarder (HMAC + timeout) ──
   configureForwarder({
@@ -276,6 +362,14 @@ async function main(): Promise<void> {
   // limiter, so it's safe to run on every boot.
   ensureBankOaWatched(config).catch((err) => {
     logger.warn("Bank OA onboarding failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  });
+
+  // ── Step 6d: Watch configured bank-OA MIDs that the account already added ──
+  // Verified (never auto-follows). Missing MIDs are skipped for the customer to add.
+  ensureConfiguredOaWatched(config).catch((err) => {
+    logger.warn("Configured OA watch failed", {
       error: err instanceof Error ? err.message : String(err),
     });
   });

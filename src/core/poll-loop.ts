@@ -90,6 +90,14 @@ export async function runPollLoop(client: Client): Promise<void> {
       for (const op of ops) {
         if (op?.revision !== undefined) revision = op.revision;
 
+        // Trace every op that comes off the wire so "did it even arrive?" is
+        // answerable from the console alone (RAW_OP_LOG only writes to a file).
+        logger.debug("Poll loop: op received", {
+          type: op?.type,
+          backlog: firstPoll,
+          chatId: op?.message?.to,
+        });
+
         // DEV: dump the raw op so real LineOpType numbers + param semantics can
         // be confirmed against live traffic (no-op unless RAW_OP_LOG is set).
         // Fire-and-forget: name resolution must never block/slow the poll loop.

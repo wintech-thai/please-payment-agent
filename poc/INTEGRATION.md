@@ -27,6 +27,7 @@ worker เปิด HTTP API บน `HTTP_PORT` (default `3000`). Endpoint ท�
 | Method | Path | Auth | Body | Response |
 |---|---|---|---|---|
 | GET | `/health` | เปิด | — | `{ok, instanceId, uptimeSec, login}` |
+| GET | `/status` | Basic | — | ใครล็อกอินอยู่ + build ที่ deploy + สถานะ session/forward/onix/watched (ดู §1.4) |
 | GET | `/login/status` | Basic | — | `{ok, state, qrUrl?, pincode?, profileName?, profileMid?, error?, updatedAt}` |
 | POST | `/login/qr` | Basic | — | `202 {ok, state, qrUrl?}` (รอ QR URL สูงสุด ~12s) |
 | POST | `/login/password` | Basic | `{email, password}` | `202 {ok, state}` |
@@ -59,6 +60,41 @@ curl -s -u api:$KEY -X POST http://localhost:3000/login/password \
   -d '{"email":"a@b.com","password":"secret"}'
 # → 202 {"ok":true,"state":"starting"}  แล้ว poll /login/status ต่อ (2FA → pincode)
 ```
+
+### 1.4 `GET /status` — ใครล็อกอิน + deploy เวอร์ชันไหน
+
+```bash
+curl -s -u api:$KEY http://localhost:3000/status
+```
+
+```jsonc
+{
+  "login":  { "loggedIn": true, "state": "ready",        // 1) ใครล็อกอินอยู่
+              "profileName": "Onlyyou", "profileMid": "u0310fc16…",
+              "awaitingScan": false, "awaitingPin": false },
+  "build":  { "commitShort": "9500409", "branch": "develop",   // 2) code ที่ deploy
+              "commit": "950040984bea…", "builtAt": "2026-07-25T08:05:11Z",
+              "dirty": true, "version": "2.0.0" },
+  "session":{ "store": "redis", "persistent": true, "keyPrefix": "rlbotline:poc-001" },
+  "forward":{ "webhookUrl": "http://poc-app:8080/ingest", "configured": true, "signed": false },
+  "onix":   { "enabled": true, "apiUrl": "…", "org": "global", "agentId": "…" },
+  "watched":{ "total": 1, "oa": 1, "enabled": 1,
+              "chats": [{ "chatId": "u4ca19114…", "chatName": "SCB Connect", "chatType": "oa" }] }
+}
+```
+
+`build` มาจาก build args ที่ฝังตอน `docker build` — ต้องส่งตอน build ไม่งั้นได้ `"unknown"`:
+
+```bash
+cd poc
+GIT_COMMIT=$(git rev-parse HEAD) \
+GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD) \
+BUILD_TIME=$(date -u +%FT%TZ) \
+GIT_DIRTY=$([ -n "$(git status --porcelain)" ] && echo 1 || echo 0) \
+docker compose up --build -d
+```
+
+> `dirty: true` = image ถูก build ตอนที่ working tree มีของแก้ยังไม่ commit — commit ที่รายงานจึงไม่ตรงกับโค้ดจริงเป๊ะ
 
 ### 1.3 ผ่าน proxy ของ POC (ซ่อน API key จาก browser)
 
@@ -130,6 +166,26 @@ BANK_OA_HANDLES=@scbconnect,@krungthaiconnext,@kbanklive
 > (restore session จาก Redis, ไม่ login ใหม่) — รอบนี้ resolve เจอ → follow + watch เป็น `chatType:"oa"`
 > → เข้า path ONIX (§4.2) ได้.
 
+### 3.1b Verified OA watch — `BANK_OA_MIDS` (แนะนำสำหรับ bank OA)
+
+เพราะ §3.1 (`@handle`) resolve ไม่ได้ ใช้ **mid** ตรงๆ แทน — worker จะ **ตรวจว่า mid นั้น account add ไว้จริงไหม**
+ก่อน watch (ไม่ auto-follow):
+
+```dotenv
+BANK_OA_MIDS=u4ca19114ed596ee2f4e63335ec7143fb,u8cc52e369d2bca4a5ce8c506170c712e,uce372f6ada1d1a0855973fefc2942f9a
+```
+
+ตอน boot `ensureConfiguredOaWatched()` ทำ: `getAllContactIds()` → ถ้า mid **อยู่ใน contact** → watch เป็น
+`chatType:"oa"` + ชื่อจริง (เข้า ONIX §4.2 ได้); ถ้า **ไม่อยู่** → ข้าม (ไม่ watch, ไม่ add — ให้ลูกค้า add เอง).
+log ที่เห็น:
+
+```
+Configured OA watched (verified contact)   {"mid":"u4ca19114...","name":"SCB Connect"}   ← ยืนยันว่า mid = ธนาคารไหน
+Configured OA not in contacts — skipped (customer must add it)   {"mid":"u8cc52e..."}      ← ยังไม่ได้ add
+```
+
+> ได้ mid มาจาก log ตอน OA ส่งข้อความ: `docker compose logs worker | grep -oE '"chatId":"u[0-9a-f]{32}"' | sort -u`
+
 ### 3.2 Watch มือ (fallback) — `WATCH_CHAT_IDS` หรือ `!watch add`
 
 ถ้าไม่อยากพึ่ง auto-resolve หรืออยาก watch แชท/กลุ่มอื่น:
@@ -141,9 +197,17 @@ WATCH_CHAT_IDS=u4ca19114ed596ee2f4e63335ec7143fb,c1234...
 
 หรือ runtime (ไม่ต้อง restart): จาก account ที่ login พิมพ์ `!watch add <mid>` ในแชทไหนก็ได้.
 
-**หา mid ของ OA/กลุ่ม:** เปิด `RAW_OP_LOG=1` แล้วส่ง/รับข้อความหนึ่งครั้ง — chatId จะโผล่ใน log แม้ยังไม่ watch:
+**หา mid ของ OA/กลุ่ม:** เปิด `RAW_OP_LOG=1` แล้วส่ง/รับข้อความหนึ่งครั้ง — op จะถูกบันทึกแม้ยังไม่ watch.
+
+⚠️ `RAW_OP_LOG` เขียนลง **ไฟล์เท่านั้น** (`./logs/log-DD-MM-YYYY.log`) — **ไม่ออก console** และไม่ขึ้นกับ `LOG_LEVEL`:
 
 ```bash
+# 1) จากไฟล์ raw op (แหล่งหลัก — mid ถูก annotate ชื่อให้ด้วย)
+grep -oE '"(to|from)":"u[0-9a-f]{32}"' logs/log-*.log | sort -u
+grep -o '"param1":"u[^"]*"' logs/log-*.log | sort -u
+# → "param1":"u4ca19114ed596ee2f4e63335ec7143fb (SCB Connect)"
+
+# 2) จาก console (เฉพาะข้อความที่ไม่ใช่ text — log นี้ถูกปลดล็อกโดย RAW_OP_LOG=1)
 docker compose logs worker | grep -iE 'chatId'
 # ...{"chatId":"u4ca19114ed596ee2f4e63335ec7143fb","contentType":"FLEX",...}
 ```
@@ -273,9 +337,14 @@ REDIS_PORT=6379
 REDIS_KEY_PREFIX=                # default rlbotline:${INSTANCE_ID}
 
 # --- watch bank OA / chats ---
-BANK_OA_HANDLES=@scbconnect,@krungthaiconnext,@kbanklive
+BANK_OA_MIDS=                    # mid ของ bank OA (verified — ไม่ auto-follow) §3.1b
+BANK_OA_HANDLES=@scbconnect,@krungthaiconnext,@kbanklive   # @handle resolve ไม่ได้ (ดู §3.1)
 WATCH_CHAT_IDS=                  # fallback: watch มือ (comma-separated)
-RAW_OP_LOG=1                     # ช่วยหา chatId ของ OA/กลุ่ม
+
+# --- logging ---
+LOG_LEVEL=debug                  # console: debug/info/warn/error (default info)
+RAW_OP_LOG=1                     # raw op → ไฟล์ ./logs/ เท่านั้น (ไม่ออก console)
+RAW_OP_LOG_DIR=/app/logs
 
 # --- webhook: generic ---
 WEBHOOK_URL=http://poc-app:8080/ingest

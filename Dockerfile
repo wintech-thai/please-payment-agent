@@ -39,6 +39,19 @@ COPY scripts/worker-entrypoint.sh ./scripts/worker-entrypoint.sh
 # state to the optional Central API — nothing is written to disk here.
 RUN chown -R bun:bun /app
 
+# Build provenance — which commit/branch this image was built from. Passed as
+# build args (see docker-compose.yml) and surfaced by GET /status + the boot log,
+# so a running container can be matched back to its source. Declared AFTER the
+# source COPY so changing the commit does not bust the dependency layer cache.
+ARG GIT_COMMIT=unknown
+ARG GIT_BRANCH=unknown
+ARG BUILD_TIME=unknown
+ARG GIT_DIRTY=0
+ENV GIT_COMMIT=$GIT_COMMIT
+ENV GIT_BRANCH=$GIT_BRANCH
+ENV BUILD_TIME=$BUILD_TIME
+ENV GIT_DIRTY=$GIT_DIRTY
+
 # Environment defaults (override at runtime via env / .env)
 ENV NODE_ENV=production
 ENV LOG_LEVEL=info
@@ -54,9 +67,12 @@ USER bun
 # Standalone app container listens on port 3000
 EXPOSE 3000
 
-# Health check: verify the bun process is alive
+# Health check: hit the inbound HTTP API. `pgrep` is NOT in bun:1-slim (the old
+# check failed with "pgrep: not found", so every container reported unhealthy);
+# curl is installed above and /health is unauthenticated. HTTP_PORT=0 disables
+# the server, so treat that case as healthy rather than failing forever.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-  CMD pgrep -f "bun" > /dev/null || exit 1
+  CMD [ "${HTTP_PORT:-3000}" = "0" ] || curl -fsS "http://127.0.0.1:${HTTP_PORT:-3000}/health" > /dev/null || exit 1
 
 # Bun runs TypeScript directly — no build step needed
 CMD ["bun", "run", "src/index.ts"]
