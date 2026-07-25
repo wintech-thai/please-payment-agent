@@ -21,6 +21,7 @@ import {
   safeReadBody,
 } from "./http-log.js";
 import type { OutboundWebhookTarget } from "../types.js";
+import type { BankTx } from "./bank-tx.js";
 
 export interface ForwardedMessage {
   /** Unique LINE message id */
@@ -43,6 +44,8 @@ export interface ForwardedMessage {
   instanceId: string;
   /** Raw LINE message object (msg.raw.raw — the underlying wire Message struct). Optional. */
   raw?: unknown;
+  /** Structured bank transaction — present only on bank-OA money-in/out messages. */
+  bankTx?: BankTx;
 }
 
 export interface ForwardResult {

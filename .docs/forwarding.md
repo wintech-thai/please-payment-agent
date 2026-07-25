@@ -47,15 +47,62 @@ sequenceDiagram
 2. **ไม่ใช่คำสั่งบอท** (ขึ้นต้นด้วย `COMMAND_PREFIX`)
 3. ผ่าน **filter** ของ chat นั้น (`none` / `substring` / `regex`) ถ้ามีตั้งไว้
 
+เฉพาะแชท **bank OA** (`watched.chatType === "oa"`) เพิ่มเงื่อนไขข้อเดียว (มีผลทั้ง sink generic และ onix)
+ผ่าน `shouldForwardOaMessage()` ([../src/core/bank-tx.ts](../src/core/bank-tx.ts)):
+
+4. **`FILTER_EVENT` ไม่ตั้ง/ว่าง → ไม่กรองอะไรเลย** forward ทุก message; ถ้าตั้ง:
+   - ข้อความที่ `parseBankTx()` แปลงเป็นธุรกรรมได้ → ผ่านเมื่อ `eventType` (`tx_in`|`tx_out`)
+     อยู่ในรายการ (`FILTER_EVENT=tx_in` = เงินเข้าอย่างเดียว)
+   - OA ธนาคารที่**รู้ pattern แล้ว** (SCB Connect, Krungthai Connext) แต่ parse ไม่ได้
+     (โฆษณา, rich-menu เช่น "เช็กยอด/คะแนน") → **drop** พร้อม log `debug`
+   - OA ที่**ยังไม่รู้ pattern** (เช่น KBank) → **fail open** forward ทุก message เสมอ
+     จนกว่าจะเพิ่ม pattern ใน parser
+
 เฉพาะเส้นทาง **onix** เพิ่มเงื่อนไข:
 
-4. `onix.enabled === true` (ตั้ง env ครบ)
-5. `watched.chatType === "oa"` (เป็น official account)
-6. ข้อความมี **text** ไม่ว่าง — onix's NotifyLineMessage สื่อสารด้วย `title` + `text`; ข้อความที่เป็น
+6. `onix.enabled === true` (ตั้ง env ครบ)
+7. ข้อความมี **text** ไม่ว่าง — onix's NotifyLineMessage สื่อสารด้วย `title` + `text`; ข้อความที่เป็น
    media/sticker ล้วน (ไม่มี text) จะถูก **ข้าม** พร้อม log ระดับ `debug` (ไม่ทิ้งเงียบ)
 
 > การ forward แบบ generic (per-chat `forwardUrl`, user webhook targets, และ sink กลาง
-> `/webhooks/forward`) ยังทำงานเหมือนเดิมทุกข้อความที่ผ่านข้อ 1–3 — onix เป็น sink **เพิ่มเติม** ไม่ทับของเดิม
+> `/webhooks/forward`) ยังทำงานเหมือนเดิมทุกข้อความที่ผ่านข้อ 1–3 (แชทธรรมดา) หรือ 1–4 (bank OA)
+> — onix เป็น sink **เพิ่มเติม** ไม่ทับของเดิม
+
+### 2a. bank_tx — structured payload
+
+ข้อความ OA ที่ parse ได้จะแนบ field `bankTx` ไปกับ payload ของ generic forward **เสมอ**
+(ไม่เกี่ยวกับว่าตั้ง `FILTER_EVENT` หรือไม่) — field เดิมทั้งหมดรวมทั้ง `text` (string) และ
+`raw` (wire struct หลัง redact) ยังส่งครบเหมือนเดิม; ฝั่ง onix ยังส่ง `{title, text}` ตาม contract เดิม:
+
+```jsonc
+{
+  "event": "bank_tx",
+  "eventType": "tx_in",               // "tx_in" | "tx_out" — ใช้คู่กับ FILTER_EVENT
+  "direction": "in",                  // "in" | "out"
+  "amount": 2000.00,                  // number บวกเสมอ
+  "bank": "SCB",                      // "SCB" | "KTB" — map จากชื่อ OA
+  "chatName": "SCB Connect",
+  "receivedAt": 1784866519351,        // unix ms ตอน worker รับ
+  // optional — มีก็ใส่ ไม่มีตัด key ทิ้ง
+  "balance": 18916.39,                // "ยอดเงินที่ใช้ได้" / "ยอดที่ใช้ได้"
+  "account": "X-9148",                // บัญชีฝั่งเรา (เลขย่อตามที่ธนาคารแสดง)
+  "sourceAccount": "XX9148",          // บัญชีผู้โอน (ตัดชื่อธนาคารออก) — in: ฝั่งตรงข้าม, out: บัญชีเรา
+  "destinationAccount": "XX3090",     // บัญชีผู้รับ (ตัดชื่อธนาคารออก) — in: บัญชีเรา, out: ฝั่งตรงข้าม
+  "sourceAccountName": "นาย สืบพงษ์ มนต์สา",      // ชื่อผู้โอน (KTB in)
+  "destinationAccountName": "นาย สืบพงษ์ มนต์สา", // ชื่อผู้รับ (KTB out)
+  // ธนาคารต้นทาง/ปลายทาง — REQUIRED เสมอ: ฝั่งเรา = ธนาคารเจ้าของ noti,
+  // ฝั่งตรงข้าม detect จากข้อความบัญชี/memo (SCB,KTB,KBANK,BBL,BAY,TTB,GSB); ไม่เจอ = "unknown"
+  "sourceBank": "SCB",
+  "destinationBank": "KTB",
+  "memo": "เงินโอนเข้า",               // "ประเภท" (KTB) / "รายการ" (SCB ออก)
+  "txDate": "25/07/2026 16:35",       // string ตามธนาคาร ไม่แปลง
+  "text": { ... }                     // flex JSON ที่ parse เป็น object แล้ว
+}
+```
+
+การดึง field อิง template จริงของ SCB Connect + Krungthai Connext (ตัวอย่าง capture อยู่ใน
+fixtures ของ test: `scripts/fixtures/bank-tx/`) — label กับ value เป็น text-node ติดกันเสมอ
+ถ้าธนาคารเปลี่ยน template แล้ว parse ไม่ได้ ข้อความจะถูก drop พร้อม log ไม่หายเงียบ
 
 ## 3. การติดตาม OA ธนาคาร 3 ตัว
 
@@ -200,6 +247,8 @@ ONIX_API_KEY=apikey
 ONIX_APPLICATION_TYPE=backend
 ONIX_FORWARD_TIMEOUT_MS=5000
 BANK_OA_HANDLES=@scbconnect,@krungthaiconnext,@kbanklive
+# กรอง bank-OA event (§2a): ว่าง = ส่งทุก event ที่ parse ได้; tx_in = เงินเข้าอย่างเดียว
+FILTER_EVENT=tx_in,tx_out
 ```
 
 onix forwarding **ปิดอัตโนมัติ** ถ้าไม่ได้ตั้ง `ONIX_API_URL` + `ONIX_AGENT_ID` + `ONIX_API_KEY` ครบ

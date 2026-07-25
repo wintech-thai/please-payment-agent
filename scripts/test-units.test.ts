@@ -3218,3 +3218,123 @@ describe("🏦 onix — resolveEndpoint()", () => {
     expect(resolveEndpoint({ apiUrl: full, org: "global", agentId: "ignored" })).toBe(full);
   });
 });
+
+// ─── Bank TX Parser Tests ───────────────────────────────────────
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { parseBankTx, shouldForwardOaMessage, knownBank } from "../src/core/bank-tx.js";
+
+describe("🏦 bank-tx — parseBankTx()", () => {
+  const fixture = (name: string): string =>
+    readFileSync(join(import.meta.dir, "fixtures", "bank-tx", name), "utf8");
+  const NOW = 1784866519351;
+
+  test("SCB money-in parses with balance", () => {
+    const tx = parseBankTx("SCB Connect", fixture("scb_in.txt"), NOW);
+    expect(tx).not.toBeNull();
+    expect(tx!.eventType).toBe("tx_in");
+    expect(tx!.direction).toBe("in");
+    expect(tx!.amount).toBe(200);
+    expect(tx!.balance).toBe(19116.39);
+    expect(tx!.bank).toBe("SCB");
+    expect(tx!.account).toBe("X-9148");
+    expect(tx!.destinationAccount).toBe("X-9148");
+    expect(tx!.sourceAccount).toBe("X-3090"); // ตัดชื่อ+ธนาคารออก เหลือเลขบัญชี
+    expect(tx!.sourceAccountName).toBe("SUEBPONG MONS");
+    expect(tx!.sourceBank).toBe("KTB");
+    expect(tx!.destinationBank).toBe("SCB");
+    expect(tx!.receivedAt).toBe(NOW);
+    expect(typeof tx!.text).toBe("object");
+  });
+
+  test("SCB money-out parses with balance + memo", () => {
+    const tx = parseBankTx("SCB Connect", fixture("scb_out.txt"), NOW);
+    expect(tx!.eventType).toBe("tx_out");
+    expect(tx!.amount).toBe(2000);
+    expect(tx!.balance).toBe(18916.39);
+    expect(tx!.account).toBe("X-9148");
+    expect(tx!.sourceAccount).toBe("X-9148");
+    expect(tx!.destinationAccount).toBeUndefined(); // SCB out: ปลายทางอยู่ใน "รายการ" (memo)
+    expect(tx!.sourceBank).toBe("SCB");
+    expect(tx!.destinationBank).toBe("KTB"); // detected from memo "โอนไป KTB x3090"
+    expect(tx!.memo).toContain("โอนไป KTB");
+    expect(tx!.txDate).toBe("25/07/2026 16:35");
+  });
+
+  test("KTB money-in parses with counterparty", () => {
+    const tx = parseBankTx("Krungthai Connext", fixture("ktb_in.txt"), NOW);
+    expect(tx!.eventType).toBe("tx_in");
+    expect(tx!.amount).toBe(2000);
+    expect(tx!.balance).toBe(3234.75);
+    expect(tx!.bank).toBe("KTB");
+    expect(tx!.account).toBe("XX3090");
+    expect(tx!.sourceAccount).toBe("XX9148"); // bank token stripped
+    expect(tx!.destinationAccount).toBe("XX3090");
+    expect(tx!.sourceBank).toBe("SCB");
+    expect(tx!.destinationBank).toBe("KTB");
+    expect(tx!.sourceAccountName).toContain("สืบพงษ์");
+    expect(tx!.destinationAccountName).toBeUndefined();
+  });
+
+  test("KTB money-out parses", () => {
+    const tx = parseBankTx("Krungthai Connext", fixture("ktb_out.txt"), NOW);
+    expect(tx!.eventType).toBe("tx_out");
+    expect(tx!.amount).toBe(200);
+    expect(tx!.balance).toBe(3034.75);
+    expect(tx!.sourceAccount).toBe("XX3090");
+    expect(tx!.destinationAccount).toBe("XX9148"); // bank token stripped
+    expect(tx!.sourceBank).toBe("KTB");
+    expect(tx!.destinationBank).toBe("SCB");
+    expect(tx!.destinationAccountName).toContain("สืบพงษ์");
+    expect(tx!.sourceAccountName).toBeUndefined();
+    expect(tx!.memo).toBe("โอนเงินออก");
+  });
+
+  test("counterparty bank falls back to \"unknown\" when undetectable", () => {
+    const nodes = ["เงินเข้า", "+100.00", "จากบัญชี", "x1234", "เข้าบัญชี", "XX3090"]
+      .map((text) => ({ type: "text", text }));
+    const tx = parseBankTx("Krungthai Connext", JSON.stringify({ contents: nodes }), NOW)!;
+    expect(tx.sourceBank).toBe("unknown");
+    expect(tx.destinationBank).toBe("KTB");
+    expect(tx.sourceAccount).toBe("x1234");
+  });
+
+  test("promo flex messages are rejected", () => {
+    expect(parseBankTx("SCB Connect", fixture("scb_promo_activate.txt"), NOW)).toBeNull();
+    expect(parseBankTx("SCB Connect", fixture("scb_promo_intro.txt"), NOW)).toBeNull();
+  });
+
+  test("plain-text rich-menu tap is rejected", () => {
+    expect(parseBankTx("SCB Connect", fixture("scb_menu_tap.txt"), NOW)).toBeNull();
+    expect(parseBankTx("SCB Connect", "เช็กยอด/คะแนน", NOW)).toBeNull();
+  });
+
+  test("shouldForwardOaMessage: empty FILTER_EVENT forwards everything", () => {
+    const txIn = parseBankTx("SCB Connect", fixture("scb_in.txt"), NOW);
+    const promo = parseBankTx("SCB Connect", fixture("scb_promo_intro.txt"), NOW);
+    expect(shouldForwardOaMessage("SCB Connect", txIn, [])).toBe(true);
+    expect(shouldForwardOaMessage("SCB Connect", promo, [])).toBe(true); // promo = null → still forwarded
+    expect(shouldForwardOaMessage("KBank LIVE", null, [])).toBe(true);
+  });
+
+  test("shouldForwardOaMessage: FILTER_EVENT set narrows by eventType", () => {
+    const txIn = parseBankTx("SCB Connect", fixture("scb_in.txt"), NOW);
+    const txOut = parseBankTx("SCB Connect", fixture("scb_out.txt"), NOW);
+    expect(shouldForwardOaMessage("SCB Connect", txIn, ["tx_in"])).toBe(true);
+    expect(shouldForwardOaMessage("SCB Connect", txOut, ["tx_in"])).toBe(false);
+    expect(shouldForwardOaMessage("SCB Connect", txIn, ["tx_out"])).toBe(false);
+    expect(shouldForwardOaMessage("SCB Connect", txOut, ["tx_in", "tx_out"])).toBe(true);
+  });
+
+  test("shouldForwardOaMessage: FILTER_EVENT set drops known-bank non-tx, fails open on unknown OA", () => {
+    const filter = ["tx_in", "tx_out"];
+    // SCB/KTB = known patterns → promos and rich-menu texts drop
+    expect(shouldForwardOaMessage("SCB Connect", null, filter)).toBe(false);
+    expect(shouldForwardOaMessage("Krungthai Connext", null, filter)).toBe(false);
+    // Unknown-pattern OA (e.g. KBank) → every message still forwards
+    expect(shouldForwardOaMessage("KBank LIVE", null, filter)).toBe(true);
+    expect(knownBank("KBank LIVE")).toBeNull();
+    expect(knownBank("SCB Connect")).toBe("SCB");
+    expect(knownBank("Krungthai Connext")).toBe("KTB");
+  });
+});

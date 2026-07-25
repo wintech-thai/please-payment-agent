@@ -113,6 +113,14 @@ export function loadConfig(): WorkerConfig {
     .map((h) => h.trim())
     .filter((h) => h.length > 0);
 
+  // Bank-OA event filter (comma-separated, e.g. FILTER_EVENT=tx_in,tx_out).
+  // Empty/unset = forward every parsed bank event. Future event names (e.g. a
+  // balance event) plug in here without touching the filter mechanism.
+  const filterEvent = optionalEnv("FILTER_EVENT", "")
+    .split(",")
+    .map((e) => e.trim())
+    .filter((e) => e.length > 0);
+
   // Inbound HTTP API (standalone app): login + health on this port. 0 disables.
   const httpPort = optionalInt("HTTP_PORT", 3000);
 
@@ -145,6 +153,7 @@ export function loadConfig(): WorkerConfig {
     onix,
     bankOaHandles,
     bankOaMids,
+    filterEvent,
     httpPort,
     httpApiEnabled: httpPort > 0,
     httpApiUser: optionalEnv("HTTP_API_USER", "api"),

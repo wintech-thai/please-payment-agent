@@ -357,6 +357,11 @@ export interface WorkerConfig {
    * account has not added is skipped (the customer adds it themselves).
    */
   bankOaMids: string[];
+  /**
+   * Bank-OA event filter (`FILTER_EVENT`, comma-separated, e.g. "tx_in,tx_out").
+   * Empty = forward every parsed bank event. Matched against `BankTx.eventType`.
+   */
+  filterEvent: string[];
   /** Inbound HTTP API port (login + health). 0 disables the server. */
   httpPort: number;
   /** True when httpPort > 0 — this standalone app exposes an inbound HTTP API. */

@@ -154,6 +154,7 @@ relay กลับ user app
 | `ONIX_API_KEY` | onix* | — | Basic auth password / API key (secret) |
 | `ONIX_APPLICATION_TYPE` | — | `backend` | ค่า header `Onix-Application-Type` |
 | `ONIX_FORWARD_TIMEOUT_MS` | — | `5000` | timeout ของ POST ไป onix (ms) |
+| `FILTER_EVENT` | — | `""` (ว่าง = ไม่กรอง forward ทุก message) | กรอง bank-OA ตาม `eventType` (`tx_in,tx_out`) เมื่อตั้งค่า: ธุรกรรมผ่านตามชื่อ event, non-tx จากธนาคารที่รู้ pattern (SCB/KTB) ถูก drop, OA ที่ยังไม่รู้ pattern forward ทุก message เสมอ — ดู forwarding.md §2/§2a |
 | `BANK_OA_HANDLES` | — | `@scbconnect,@krungthaiconnext,@kbanklive` | รายการ OA ที่ follow + watch |
 | `HTTP_PORT` | — | `3000` | พอร์ต inbound HTTP API (login/health); `0` = ปิด |
 | `HTTP_API_USER` | — | `api` | Basic auth user ของ HTTP API |

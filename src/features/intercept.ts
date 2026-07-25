@@ -14,6 +14,7 @@ import { getWatched, isLoaded, getCompiledRegex } from "../core/chat-registry.js
 import { getWebhookTargets } from "../core/database.js";
 import { fanOut, type ForwardedMessage } from "../core/forwarder.js";
 import { isOnixEnabled, notifyLineMessage } from "../core/onix-client.js";
+import { parseBankTx, shouldForwardOaMessage, type BankTx } from "../core/bank-tx.js";
 import { logger } from "../core/logger.js";
 import type { Feature, OutboundWebhookTarget, WorkerConfig } from "../types.js";
 
@@ -105,6 +106,23 @@ export function createInterceptFeature(config: WorkerConfig): Feature {
       return drop("watched chat disabled", msg, { chatName: watched.chatName });
     }
 
+    // Bank-OA gate (both sinks below). Filtering happens ONLY when FILTER_EVENT
+    // is set: parsed transactions pass by eventType, known-bank non-tx messages
+    // (promos, rich-menu texts) drop, and unknown-pattern OAs fail open so a
+    // bank we haven't mapped yet still forwards every message. `bankTx` is
+    // attached to the webhook payload whenever it parses, filter or not.
+    let bankTx: BankTx | null = null;
+    if (watched.chatType === "oa") {
+      bankTx = parseBankTx(watched.chatName, msg.text, Date.now());
+      if (!shouldForwardOaMessage(watched.chatName, bankTx, config.filterEvent)) {
+        return drop("excluded by FILTER_EVENT", msg, {
+          chatName: watched.chatName,
+          eventType: bankTx?.eventType ?? "not-a-bank-tx",
+          filterEvent: config.filterEvent.join(","),
+        });
+      }
+    }
+
     // Apply message filter (only when text is non-empty; media/stickers bypass)
     if (watched.filterType && watched.filterType !== "none" && msg.text) {
       let passes = false;
@@ -141,6 +159,7 @@ export function createInterceptFeature(config: WorkerConfig): Feature {
       receivedAt: Date.now(),
       instanceId: config.instanceId,
       raw: redactRaw(msg.raw.raw),
+      ...(bankTx ? { bankTx } : {}),
     };
 
     const targets: Array<string | OutboundWebhookTarget> = [];
