@@ -144,6 +144,11 @@ export async function forwardTo(
     if (!res.ok) {
       return { url: normalized.url, ok: false, status: res.status };
     }
+    logger.debug("Forward ok", {
+      url: normalized.url,
+      status: res.status,
+      messageId: payload.messageId,
+    });
     return { url: normalized.url, ok: true, status: res.status };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

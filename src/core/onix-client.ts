@@ -110,6 +110,7 @@ export async function notifyLineMessage(input: OnixNotifyInput): Promise<OnixRes
       logger.warn("onix notify returned non-OK", { status: res.status, title: input.title });
       return { ok: false, status: res.status };
     }
+    logger.debug("onix notify ok", { status: res.status, title: input.title });
     return { ok: true, status: res.status };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
