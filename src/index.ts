@@ -13,6 +13,7 @@
 
 import { loadConfig } from "./core/config.js";
 import { configureLogger, logger } from "./core/logger.js";
+import { getBuildInfo } from "./core/build-info.js";
 import { initDatabase, pruneMessages, closeDatabase } from "./core/database.js";
 import { configureStateClient } from "./core/state-client.js";
 import {
@@ -231,13 +232,32 @@ async function main(): Promise<void> {
   logger.info("═══════════════════════════════════════════════");
   logger.info("  rlbotline Worker starting up");
   logger.info("═══════════════════════════════════════════════");
+  // First line worth reading in an incident: which code is actually running.
+  logger.info("Build", { ...getBuildInfo() });
   logger.info("Configuration loaded", {
     instanceId: config.instanceId,
     botName: config.botName,
     device: config.device,
     commandPrefix: config.commandPrefix,
+    logLevel: config.logLevel,
     apiBaseUrl: config.apiBaseUrl ?? "(standalone — no Central API)",
     redis: config.redis.enabled,
+    httpPort: config.httpPort,
+    httpAuth: config.httpApiKey ? "basic" : "NONE (open)",
+  });
+
+  // Every downstream in one record, so "is X wired up?" never needs a code read.
+  logger.info("Integrations", {
+    sessionStore: config.redis.enabled ? `redis (${config.redis.keyPrefix})` : "memory (NOT persisted)",
+    forwardSink: config.webhookUrl ?? "(none — watched messages have nowhere to go)",
+    forwardSigning: config.watchHmacSecret ? "hmac-sha256" : "disabled",
+    onix: config.onix.enabled
+      ? `${config.onix.apiUrl} org=${config.onix.org} agent=${config.onix.agentId}`
+      : "disabled (needs ONIX_API_URL + ONIX_AGENT_ID + ONIX_API_KEY)",
+    centralApi: config.apiBaseUrl ?? "disabled",
+    watchChatIds: config.watchChatIds.length,
+    bankOaMids: config.bankOaMids.length,
+    bankOaHandles: config.bankOaHandles.length,
   });
 
   // When false, the worker runs fully standalone: session → Redis, watched chats
@@ -270,6 +290,12 @@ async function main(): Promise<void> {
   // (defaults to /webhooks/forward), used by the intercept fan-out.
   // Empty URL in standalone mode ⇒ sendWebhookEvent no-ops cleanly (no status plane).
   configureWebhook(central ? `${config.apiBaseUrl}/webhooks/worker` : "", config.instanceId);
+  logger.info("Status webhook configured", {
+    url: central ? `${config.apiBaseUrl}/webhooks/worker` : "(none — standalone, status events dropped)",
+    // Named apart from the forward sink on purpose: two different URLs that get
+    // confused constantly ("I set WEBHOOK_URL, why no status events?").
+    note: "status plane only — message forwarding uses WEBHOOK_URL",
+  });
 
   // ── Step 4b: Initialize Forwarder (HMAC + timeout) ──
   configureForwarder({

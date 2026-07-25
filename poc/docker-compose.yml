@@ -12,6 +12,15 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+      # Stamp the image with its source commit so GET /status can report exactly
+      # what is deployed. Populate from the shell at build time:
+      #   GIT_COMMIT=$(git rev-parse HEAD) GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD) \
+      #   BUILD_TIME=$(date -u +%FT%TZ) docker compose up --build -d
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+        GIT_BRANCH: ${GIT_BRANCH:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+        GIT_DIRTY: ${GIT_DIRTY:-0}
     restart: unless-stopped
     depends_on:
       - redis

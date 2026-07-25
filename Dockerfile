@@ -39,6 +39,19 @@ COPY scripts/worker-entrypoint.sh ./scripts/worker-entrypoint.sh
 # state to the optional Central API — nothing is written to disk here.
 RUN chown -R bun:bun /app
 
+# Build provenance — which commit/branch this image was built from. Passed as
+# build args (see docker-compose.yml) and surfaced by GET /status + the boot log,
+# so a running container can be matched back to its source. Declared AFTER the
+# source COPY so changing the commit does not bust the dependency layer cache.
+ARG GIT_COMMIT=unknown
+ARG GIT_BRANCH=unknown
+ARG BUILD_TIME=unknown
+ARG GIT_DIRTY=0
+ENV GIT_COMMIT=$GIT_COMMIT
+ENV GIT_BRANCH=$GIT_BRANCH
+ENV BUILD_TIME=$BUILD_TIME
+ENV GIT_DIRTY=$GIT_DIRTY
+
 # Environment defaults (override at runtime via env / .env)
 ENV NODE_ENV=production
 ENV LOG_LEVEL=info

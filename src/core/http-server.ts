@@ -6,6 +6,7 @@
  * over HTTP instead of a control-plane WS RPC:
  *
  *   GET  /health           → liveness + current login state (no auth)
+ *   GET  /status           → who is logged in, deployed build, downstream wiring
  *   GET  /login/status     → full login status (qrUrl / pincode / profile)
  *   POST /login/qr         → start a QR login; waits briefly for the QR URL
  *   POST /login/password   → start an email/password login  { email, password }
@@ -20,6 +21,10 @@
 import { logger } from "./logger.js";
 import { getLoginStatus } from "./login-state.js";
 import { startQrLogin, startPasswordLogin } from "./line-client.js";
+import { getBuildInfo } from "./build-info.js";
+import { isRedisEnabled, redisKey } from "./redis-client.js";
+import { isOnixEnabled } from "./onix-client.js";
+import { listWatched } from "./chat-registry.js";
 import type { WorkerConfig } from "../types.js";
 
 /** How long POST /login/qr waits for the QR URL before replying without it. */
@@ -79,6 +84,70 @@ async function handle(req: Request, config: WorkerConfig): Promise<Response> {
 
   // Everything below is login control — gate behind Basic auth.
   if (!isAuthorized(req, config)) return unauthorized();
+
+  // Operational snapshot: who is logged in, which code is running, and whether
+  // each downstream (session store, forward sink, onix) is actually wired up.
+  if (req.method === "GET" && path === "/status") {
+    const login = getLoginStatus();
+    const watched = listWatched();
+    return json({
+      ok: true,
+      instanceId: config.instanceId,
+      botName: config.botName,
+      uptimeSec: Math.floor((Date.now() - bootAt) / 1000),
+
+      // 1. Is anyone logged in — and who?
+      login: {
+        loggedIn: login.state === "ready",
+        state: login.state,
+        profileName: login.profileName,
+        profileMid: login.profileMid,
+        awaitingScan: login.state === "qr_pending",
+        awaitingPin: login.state === "pin_pending",
+        error: login.error,
+        updatedAt: login.updatedAt,
+      },
+
+      // 2. Which code is deployed.
+      build: getBuildInfo(),
+
+      // 3. Downstream wiring — "configured" is what the operator can act on.
+      session: {
+        store: isRedisEnabled() ? "redis" : "memory",
+        persistent: isRedisEnabled(),
+        keyPrefix: isRedisEnabled() ? redisKey("").replace(/:$/, "") : undefined,
+      },
+      forward: {
+        // The generic sink. No URL means watched messages have nowhere to go.
+        webhookUrl: config.webhookUrl,
+        configured: Boolean(config.webhookUrl),
+        signed: Boolean(config.watchHmacSecret),
+        timeoutMs: config.forwardTimeoutMs,
+      },
+      onix: {
+        enabled: isOnixEnabled(),
+        apiUrl: config.onix.enabled ? config.onix.apiUrl : undefined,
+        org: config.onix.org,
+        agentId: config.onix.enabled ? config.onix.agentId : undefined,
+        apiUser: config.onix.apiUser,
+      },
+      centralApi: {
+        enabled: config.centralApiEnabled,
+        apiBaseUrl: config.apiBaseUrl,
+      },
+      watched: {
+        total: watched.length,
+        oa: watched.filter((w) => w.chatType === "oa").length,
+        enabled: watched.filter((w) => w.enabled).length,
+        chats: watched.map((w) => ({
+          chatId: w.chatId,
+          chatName: w.chatName,
+          chatType: w.chatType,
+          enabled: w.enabled,
+        })),
+      },
+    });
+  }
 
   if (req.method === "GET" && path === "/login/status") {
     return json({ ok: true, ...getLoginStatus() });

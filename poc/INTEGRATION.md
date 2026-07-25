@@ -27,6 +27,7 @@ worker เปิด HTTP API บน `HTTP_PORT` (default `3000`). Endpoint ท�
 | Method | Path | Auth | Body | Response |
 |---|---|---|---|---|
 | GET | `/health` | เปิด | — | `{ok, instanceId, uptimeSec, login}` |
+| GET | `/status` | Basic | — | ใครล็อกอินอยู่ + build ที่ deploy + สถานะ session/forward/onix/watched (ดู §1.4) |
 | GET | `/login/status` | Basic | — | `{ok, state, qrUrl?, pincode?, profileName?, profileMid?, error?, updatedAt}` |
 | POST | `/login/qr` | Basic | — | `202 {ok, state, qrUrl?}` (รอ QR URL สูงสุด ~12s) |
 | POST | `/login/password` | Basic | `{email, password}` | `202 {ok, state}` |
@@ -59,6 +60,41 @@ curl -s -u api:$KEY -X POST http://localhost:3000/login/password \
   -d '{"email":"a@b.com","password":"secret"}'
 # → 202 {"ok":true,"state":"starting"}  แล้ว poll /login/status ต่อ (2FA → pincode)
 ```
+
+### 1.4 `GET /status` — ใครล็อกอิน + deploy เวอร์ชันไหน
+
+```bash
+curl -s -u api:$KEY http://localhost:3000/status
+```
+
+```jsonc
+{
+  "login":  { "loggedIn": true, "state": "ready",        // 1) ใครล็อกอินอยู่
+              "profileName": "Onlyyou", "profileMid": "u0310fc16…",
+              "awaitingScan": false, "awaitingPin": false },
+  "build":  { "commitShort": "9500409", "branch": "develop",   // 2) code ที่ deploy
+              "commit": "950040984bea…", "builtAt": "2026-07-25T08:05:11Z",
+              "dirty": true, "version": "2.0.0" },
+  "session":{ "store": "redis", "persistent": true, "keyPrefix": "rlbotline:poc-001" },
+  "forward":{ "webhookUrl": "http://poc-app:8080/ingest", "configured": true, "signed": false },
+  "onix":   { "enabled": true, "apiUrl": "…", "org": "global", "agentId": "…" },
+  "watched":{ "total": 1, "oa": 1, "enabled": 1,
+              "chats": [{ "chatId": "u4ca19114…", "chatName": "SCB Connect", "chatType": "oa" }] }
+}
+```
+
+`build` มาจาก build args ที่ฝังตอน `docker build` — ต้องส่งตอน build ไม่งั้นได้ `"unknown"`:
+
+```bash
+cd poc
+GIT_COMMIT=$(git rev-parse HEAD) \
+GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD) \
+BUILD_TIME=$(date -u +%FT%TZ) \
+GIT_DIRTY=$([ -n "$(git status --porcelain)" ] && echo 1 || echo 0) \
+docker compose up --build -d
+```
+
+> `dirty: true` = image ถูก build ตอนที่ working tree มีของแก้ยังไม่ commit — commit ที่รายงานจึงไม่ตรงกับโค้ดจริงเป๊ะ
 
 ### 1.3 ผ่าน proxy ของ POC (ซ่อน API key จาก browser)
 
