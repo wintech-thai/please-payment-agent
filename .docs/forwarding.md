@@ -72,7 +72,9 @@ sequenceDiagram
 
 ข้อความ OA ที่ parse ได้จะแนบ field `bankTx` ไปกับ payload ของ generic forward **เสมอ**
 (ไม่เกี่ยวกับว่าตั้ง `FILTER_EVENT` หรือไม่) — field เดิมทั้งหมดรวมทั้ง `text` (string) และ
-`raw` (wire struct หลัง redact) ยังส่งครบเหมือนเดิม; ฝั่ง onix ยังส่ง `{title, text}` ตาม contract เดิม:
+`raw` (wire struct หลัง redact) ยังส่งครบเหมือนเดิม; ฝั่ง onix ยังส่ง `{title, text}` ตาม contract เดิม.
+`bankTx` มีแต่ field แบน ๆ (string/number) — **ไม่มี** flex object ซ้อนข้างใน (ตัว flex ยังอยู่ที่
+`text` ของ payload หลักตามเดิม) เพื่อไม่ให้ webhook server เดิมที่ parse payload พังจาก nested object:
 
 ```jsonc
 {
@@ -95,8 +97,7 @@ sequenceDiagram
   "sourceBank": "SCB",
   "destinationBank": "KTB",
   "memo": "เงินโอนเข้า",               // "ประเภท" (KTB) / "รายการ" (SCB ออก)
-  "txDate": "25/07/2026 16:35",       // string ตามธนาคาร ไม่แปลง
-  "text": { ... }                     // flex JSON ที่ parse เป็น object แล้ว
+  "txDate": "25/07/2026 16:35"        // string ตามธนาคาร ไม่แปลง
 }
 ```
 

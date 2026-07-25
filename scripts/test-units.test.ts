@@ -3244,7 +3244,7 @@ describe("🏦 bank-tx — parseBankTx()", () => {
     expect(tx!.sourceBank).toBe("KTB");
     expect(tx!.destinationBank).toBe("SCB");
     expect(tx!.receivedAt).toBe(NOW);
-    expect(typeof tx!.text).toBe("object");
+    expect("text" in tx!).toBe(false); // flex object ไม่แนบใน bankTx — payload หลักมี text เดิมอยู่แล้ว
   });
 
   test("SCB money-out parses with balance + memo", () => {

@@ -44,8 +44,6 @@ export interface BankTx {
   memo?: string;
   /** Bank-formatted date string, not normalized. */
   txDate?: string;
-  /** Parsed flex object (or the original string when text wasn't JSON). */
-  text: unknown;
 }
 
 /** Collect `.text` of every flex text-node in document order. */
@@ -180,7 +178,6 @@ export function parseBankTx(
     receivedAt,
     sourceBank: "unknown",
     destinationBank: "unknown",
-    text: flex ?? text,
   };
 
   const balance = parseAmount(valueAfter(/^ยอด(เงิน)?ที่ใช้ได้$/));
