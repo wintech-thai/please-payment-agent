@@ -6,6 +6,13 @@
  */
 
 import { logger } from "./logger.js";
+import {
+  headersToObject,
+  logHttpError,
+  logHttpRequest,
+  logHttpResponse,
+  safeReadBody,
+} from "./http-log.js";
 import type { WebhookEvent, WebhookPayload } from "../types.js";
 
 let webhookUrl = "";
@@ -44,40 +51,48 @@ export async function sendWebhookEvent(
     timestamp: Date.now(),
   };
 
+  const headers = {
+    "Content-Type": "application/json",
+    "X-Instance-ID": instanceId,
+  };
+  const body = JSON.stringify(payload);
+
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    const trace = { event, attempt, maxRetries: MAX_RETRIES, instanceId };
+    logHttpRequest("webhook", { method: "POST", url: webhookUrl, headers, body }, trace);
+    const startedAt = Date.now();
     try {
       const response = await fetch(webhookUrl, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Instance-ID": instanceId,
-        },
-        body: JSON.stringify(payload),
+        headers,
+        body,
         signal: AbortSignal.timeout(5000),
       });
+      const responseBody = await safeReadBody(response);
+      logHttpResponse(
+        "webhook",
+        {
+          method: "POST",
+          url: webhookUrl,
+          status: response.status,
+          statusText: response.statusText,
+          durationMs: Date.now() - startedAt,
+          headers: headersToObject(response.headers),
+          body: responseBody,
+        },
+        trace,
+      );
 
       if (response.ok) {
-        logger.debug("Webhook sent successfully", {
-          event,
-          attempt,
-          status: response.status,
-        });
         return;
       }
-
-      logger.warn("Webhook returned non-OK status", {
-        event,
-        attempt,
-        status: response.status,
-      });
     } catch (error) {
-      const errMsg =
-        error instanceof Error ? error.message : String(error);
-      logger.warn("Webhook send failed", {
-        event,
-        attempt,
-        error: errMsg,
-      });
+      logHttpError(
+        "webhook",
+        { method: "POST", url: webhookUrl, durationMs: Date.now() - startedAt, timeoutMs: 5000 },
+        error,
+        trace,
+      );
 
       if (attempt < MAX_RETRIES) {
         await new Promise((resolve) =>

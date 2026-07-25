@@ -13,6 +13,13 @@
 
 import { createHmac, randomUUID } from "node:crypto";
 import { logger } from "./logger.js";
+import {
+  headersToObject,
+  logHttpError,
+  logHttpRequest,
+  logHttpResponse,
+  safeReadBody,
+} from "./http-log.js";
 import type { OutboundWebhookTarget } from "../types.js";
 
 export interface ForwardedMessage {
@@ -132,8 +139,17 @@ export async function forwardTo(
   if (normalized.token) {
     headers["Authorization"] = buildApiKeyAuthorization(normalized.token);
   }
+  const trace = {
+    messageId: payload.messageId,
+    chatId: payload.chatId,
+    signed: Boolean(headers["X-Webhook-Signature"]),
+    authenticated: Boolean(normalized.token),
+  };
+  logHttpRequest("forward", { method: "POST", url: normalized.url, headers, body }, trace);
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const startedAt = Date.now();
   try {
     const res = await fetch(normalized.url, {
       method: "POST",
@@ -141,17 +157,32 @@ export async function forwardTo(
       body,
       signal: controller.signal,
     });
+    const responseBody = await safeReadBody(res);
+    logHttpResponse(
+      "forward",
+      {
+        method: "POST",
+        url: normalized.url,
+        status: res.status,
+        statusText: res.statusText,
+        durationMs: Date.now() - startedAt,
+        headers: headersToObject(res.headers),
+        body: responseBody,
+      },
+      trace,
+    );
     if (!res.ok) {
       return { url: normalized.url, ok: false, status: res.status };
     }
-    logger.debug("Forward ok", {
-      url: normalized.url,
-      status: res.status,
-      messageId: payload.messageId,
-    });
     return { url: normalized.url, ok: true, status: res.status };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    logHttpError(
+      "forward",
+      { method: "POST", url: normalized.url, durationMs: Date.now() - startedAt, timeoutMs },
+      err,
+      trace,
+    );
     return { url: normalized.url, ok: false, error: msg };
   } finally {
     clearTimeout(timer);

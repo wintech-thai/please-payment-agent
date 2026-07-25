@@ -25,6 +25,13 @@
  */
 
 import { logger } from "./logger.js";
+import {
+  headersToObject,
+  logHttpError,
+  logHttpRequest,
+  logHttpResponse,
+  safeReadBody,
+} from "./http-log.js";
 import type { OnixConfig } from "../types.js";
 
 /** Constant envelope fields for a LINE-sourced notification (see onix examples). */
@@ -93,28 +100,53 @@ export async function notifyLineMessage(input: OnixNotifyInput): Promise<OnixRes
     text: input.text,
   });
 
+  const url = buildEndpoint(cfg);
+  const headers = {
+    "Content-Type": "application/json",
+    "Onix-Application-Type": cfg.appType,
+    Authorization: buildBasicAuth(cfg),
+  };
+  // org/agent/user identify WHICH onix target and identity was used — the fields
+  // you compare against onix's side when a notify is rejected.
+  const trace = { title: input.title, org: cfg.org, agentId: cfg.agentId, apiUser: cfg.apiUser };
+  logHttpRequest("onix", { method: "POST", url, headers, body }, trace);
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), cfg.timeoutMs);
+  const startedAt = Date.now();
   try {
-    const res = await fetch(buildEndpoint(cfg), {
+    const res = await fetch(url, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Onix-Application-Type": cfg.appType,
-        Authorization: buildBasicAuth(cfg),
-      },
+      headers,
       body,
       signal: controller.signal,
     });
+    const responseBody = await safeReadBody(res);
+    logHttpResponse(
+      "onix",
+      {
+        method: "POST",
+        url,
+        status: res.status,
+        statusText: res.statusText,
+        durationMs: Date.now() - startedAt,
+        headers: headersToObject(res.headers),
+        body: responseBody,
+      },
+      trace,
+    );
     if (!res.ok) {
-      logger.warn("onix notify returned non-OK", { status: res.status, title: input.title });
       return { ok: false, status: res.status };
     }
-    logger.debug("onix notify ok", { status: res.status, title: input.title });
     return { ok: true, status: res.status };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger.warn("onix notify failed", { error: msg, title: input.title });
+    logHttpError(
+      "onix",
+      { method: "POST", url, durationMs: Date.now() - startedAt, timeoutMs: cfg.timeoutMs },
+      err,
+      trace,
+    );
     return { ok: false, error: msg };
   } finally {
     clearTimeout(timer);

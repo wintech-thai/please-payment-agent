@@ -6,8 +6,11 @@
  * and so the bootstrap can block until login is ready (`waitForLoginReady`).
  *
  * `line-client.ts` is the sole writer; `http-server.ts` and `index.ts` read.
- * No imports here — keeps this module free of dependency cycles.
+ * Only `logger` is imported (it pulls in nothing but types), so this module
+ * stays free of dependency cycles.
  */
+
+import { logger } from "./logger.js";
 
 export type LoginState =
   | "idle" // no login attempted / awaiting an HTTP trigger
@@ -47,7 +50,35 @@ export function getLoginStatus(): LoginStatus {
  * When the state transitions to "ready", any `waitForLoginReady` waiters fire.
  */
 export function setLoginStatus(partial: Partial<Omit<LoginStatus, "updatedAt">>): void {
+  const previous = status;
   status = { ...status, ...partial, updatedAt: Date.now() };
+
+  // Every LINE connection transition passes through here, so one log line covers
+  // the whole flow (HTTP-triggered, WS-RPC, or boot auth ladder) — otherwise the
+  // connection state is only visible by polling /login/status from outside.
+  if (previous.state !== status.state) {
+    const record: Record<string, unknown> = {
+      from: previous.state,
+      to: status.state,
+      heldForMs: previous.updatedAt > 0 ? status.updatedAt - previous.updatedAt : undefined,
+      profileName: status.profileName,
+      profileMid: status.profileMid,
+      // The QR URL embeds a login secret — report only that one is available.
+      hasQrUrl: Boolean(status.qrUrl),
+      // PIN is intentionally visible: an operator reads it from the log to
+      // complete 2FA in the LINE app (see .docs/login.md §9).
+      pincode: status.pincode,
+      error: status.error,
+    };
+    if (status.state === "error") {
+      logger.error("LINE login state → error", record);
+    } else if (status.state === "ready") {
+      logger.info("LINE connection ready", record);
+    } else {
+      logger.info("LINE login state changed", record);
+    }
+  }
+
   if (status.state === "ready") {
     const resolvers = readyResolvers;
     readyResolvers = [];
