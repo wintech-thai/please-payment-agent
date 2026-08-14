@@ -10,6 +10,9 @@
  * Label/value extraction relies on the observed SCB Connect + Krungthai
  * Connext templates (captured in `.req/`): a value text-node always directly
  * follows its label text-node in document order.
+ *
+ * GSB Now shares that label/value shape but has neither a direction header nor
+ * a signed amount, so it gets its own reader (`parseGsbTx`).
  */
 
 export interface BankTx {
@@ -109,11 +112,75 @@ function splitAccount(s: string): { account: string; name?: string } {
   return { account: m[0], name: name || undefined };
 }
 
+/** Value text-node that directly follows the label matching `label`. */
+function valueAfterIn(trimmed: string[], label: RegExp): string | undefined {
+  const i = trimmed.findIndex((t) => label.test(t));
+  return i >= 0 ? trimmed[i + 1] : undefined;
+}
+
+/** "ยอดที่ใช้ได้" / "ยอดเงินคงเหลือ" — the remaining-balance row, when sent. */
+const BALANCE_LABEL = /^ยอด(เงิน)?(ที่ใช้ได้|คงเหลือ)$/;
+
+/** GSB writes an account as bank code + masked number: "SCBA 0003XXXX9148". */
+const GSB_ACCOUNT = /^([A-Za-z]{3,4})\s+([\dXx]{6,})$/;
+
+function parseGsbAccount(raw: string | undefined): { account?: string; bank?: string } {
+  const m = raw?.match(GSB_ACCOUNT);
+  if (!m) return {};
+  return { account: m[2], bank: detectBank(m[1]) ?? undefined };
+}
+
 /**
- * Bank code for OAs whose message templates we can PARSE; null = unknown pattern.
- * Narrower than `detectBank()` on the chat name: this gates the FILTER_EVENT
- * drop (see `shouldForwardOaMessage`), so an OA we can recognize by name but
- * not parse (GSB, KBank) must stay null and keep failing open.
+ * GSB Now template: label/value rows only — no "เงินเข้า" header and an
+ * unsigned amount ("21.91 บาท"), so the generic reader below can't touch it.
+ * Direction comes from which side holds the GSB account, since the OA only
+ * notifies its own account holder: "เข้าบัญชี" is ours → money in.
+ *
+ * Only tx_in is recognized. We have no captured เงินออก sample yet, and a
+ * GSB→GSB transfer is genuinely ambiguous from the bubble alone; both return
+ * null, which leaves the message forwarded unfiltered (`shouldForwardOaMessage`
+ * fails open for GSB because `knownBank` stays null).
+ */
+function parseGsbTx(chatName: string, trimmed: string[], receivedAt: number): BankTx | null {
+  const v = (label: RegExp): string | undefined => valueAfterIn(trimmed, label);
+
+  const source = parseGsbAccount(v(/^จากบัญชี$/));
+  const destination = parseGsbAccount(v(/^เข้าบัญชี$/));
+  if (destination.bank !== "GSB" || source.bank === "GSB") return null;
+
+  const amount = parseAmount(v(/^จำนวนเงิน$/));
+  if (amount === undefined || amount <= 0) return null;
+
+  const tx: BankTx = {
+    event: "bank_tx",
+    eventType: "tx_in",
+    direction: "in",
+    amount,
+    bank: "GSB",
+    chatName,
+    receivedAt,
+    sourceBank: source.bank ?? "unknown",
+    destinationBank: "GSB",
+  };
+  if (source.account) tx.sourceAccount = source.account;
+  if (destination.account) {
+    tx.destinationAccount = destination.account;
+    tx.account = destination.account;
+  }
+  const txDate = v(/^วันที่\s*\/\s*เวลา$/);
+  if (txDate) tx.txDate = txDate;
+  const balance = parseAmount(v(BALANCE_LABEL));
+  if (balance !== undefined) tx.balance = balance;
+
+  return tx;
+}
+
+/**
+ * Bank code for OAs whose message templates we can parse WELL ENOUGH TO DROP
+ * the rest; null = unknown pattern. Narrower than `detectBank()` on the chat
+ * name: this gates the FILTER_EVENT drop (see `shouldForwardOaMessage`), so an
+ * OA we can recognize by name but not fully parse must stay null and keep
+ * failing open — GSB is here (tx_in only, no เงินออก sample yet), KBank too.
  */
 export function knownBank(chatName: string): "SCB" | "KTB" | null {
   if (/scb/i.test(chatName)) return "SCB";
@@ -157,6 +224,9 @@ export function parseBankTx(
   }
   const trimmed = texts.map((t) => t.trim());
 
+  // GSB Now needs its own reader — it has none of the markers checked below.
+  if (detectBank(chatName) === "GSB") return parseGsbTx(chatName, trimmed, receivedAt);
+
   // Direction header: SCB "รายการเงินเข้า/ออก", KTB "เงินเข้า/ออก". Exact match
   // so promo copy mentioning transfers can't slip through.
   const header = trimmed.find((t) => /^(รายการ)?เงิน(เข้า|ออก)$/.test(t));
@@ -166,10 +236,7 @@ export function parseBankTx(
   const amount = parseAmount(trimmed.find((t) => /^[+-][\d,]+(\.\d+)?/.test(t)));
   if (amount === undefined) return null;
 
-  const valueAfter = (label: RegExp): string | undefined => {
-    const i = trimmed.findIndex((t) => label.test(t));
-    return i >= 0 ? trimmed[i + 1] : undefined;
-  };
+  const valueAfter = (label: RegExp): string | undefined => valueAfterIn(trimmed, label);
 
   // Which bank sent this — from the OA's own display name, so an OA we can
   // name but not parse yet (GSB Now, KBank LIVE) still reports a bank code.
@@ -187,7 +254,7 @@ export function parseBankTx(
     destinationBank: "unknown",
   };
 
-  const balance = parseAmount(valueAfter(/^ยอด(เงิน)?ที่ใช้ได้$/));
+  const balance = parseAmount(valueAfter(BALANCE_LABEL));
   if (balance !== undefined) tx.balance = balance;
 
   const memo = valueAfter(/^(ประเภท|รายการ)$/);
@@ -222,7 +289,7 @@ export function parseBankTx(
 
   if (memo) tx.memo = memo;
 
-  const txDate = valueAfter(/^(วันที่\/เวลา|วันที่ทำรายการ)$/);
+  const txDate = valueAfter(/^(วันที่\s*\/\s*เวลา|วันที่ทำรายการ)$/);
   if (txDate) tx.txDate = txDate;
 
   return tx;

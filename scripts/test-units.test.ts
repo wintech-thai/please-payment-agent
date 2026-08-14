@@ -3299,18 +3299,74 @@ describe("🏦 bank-tx — parseBankTx()", () => {
     expect(tx.sourceAccount).toBe("x1234");
   });
 
-  test("GSB OA — bank code comes from the OA name, template still unparsed", () => {
+  // GSB Now's rows, as observed in a real NotifyLineMessage body: each row is a
+  // horizontal box holding a label text-node then a value text-node.
+  const gsbFlex = (rows: Array<[string, string]>): string =>
+    JSON.stringify({
+      type: "bubble",
+      body: {
+        type: "box",
+        layout: "vertical",
+        contents: rows.map(([label, value]) => ({
+          type: "box",
+          layout: "horizontal",
+          contents: [
+            { type: "box", layout: "vertical", contents: [{ type: "text", text: label }] },
+            { type: "box", layout: "vertical", contents: [{ type: "text", text: value }] },
+          ],
+        })),
+      },
+    });
+
+  const GSB_IN: Array<[string, string]> = [
+    ["จากบัญชี", "SCBA 0003XXXX9148"],
+    ["เข้าบัญชี", "GSBA 0204XXXX5046"],
+    ["วันที่ / เวลา", "14 ส.ค. 2569 11:50 น."],
+    ["จำนวนเงิน", "21.91 บาท"],
+  ];
+
+  test("GSB in — no direction header, unsigned amount, 4-letter bank codes", () => {
+    const tx = parseBankTx("GSB NOW", gsbFlex(GSB_IN), NOW)!;
+    expect(tx.eventType).toBe("tx_in"); // อนุมานจาก "เข้าบัญชี" เป็นบัญชี GSBA
+    expect(tx.amount).toBe(21.91); // "21.91 บาท" ไม่มีเครื่องหมาย +/-
+    expect(tx.bank).toBe("GSB");
+    expect(tx.sourceBank).toBe("SCB"); // จาก "SCBA" ไม่ใช่ "SCB"
+    expect(tx.destinationBank).toBe("GSB");
+    expect(tx.sourceAccount).toBe("0003XXXX9148"); // เลขเต็ม ไม่ใช่แค่ท่อน XXXX9148
+    expect(tx.destinationAccount).toBe("0204XXXX5046");
+    expect(tx.account).toBe("0204XXXX5046");
+    expect(tx.txDate).toBe("14 ส.ค. 2569 11:50 น."); // label มีเว้นวรรครอบ "/"
+    expect(tx.sourceAccountName).toBeUndefined(); // "SCBA 0003" ต้องไม่หลุดมาเป็นชื่อ
+  });
+
+  test("GSB — ยอดคงเหลือ is picked up when the bubble carries it", () => {
+    const tx = parseBankTx("ธนาคารออมสิน", gsbFlex([...GSB_IN, ["ยอดเงินคงเหลือ", "1,234.56 บาท"]]), NOW)!;
+    expect(tx.balance).toBe(1234.56);
+  });
+
+  test("GSB — ambiguous / non-tx bubbles stay null and keep failing open", () => {
+    // ไม่มีฝั่ง GSB = ไม่ใช่บัญชีเรา, และ GSB→GSB แยกทิศทางไม่ได้ → null ทั้งคู่
+    const noGsb: Array<[string, string]> = [["จากบัญชี", "SCBA 0003XXXX9148"], ["เข้าบัญชี", "KBAN 0011XXXX2200"], ["จำนวนเงิน", "21.91 บาท"]];
+    const bothGsb: Array<[string, string]> = [["จากบัญชี", "GSBA 0204XXXX5046"], ["เข้าบัญชี", "GSBA 0204XXXX9999"], ["จำนวนเงิน", "21.91 บาท"]];
+    expect(parseBankTx("GSB NOW", gsbFlex(noGsb), NOW)).toBeNull();
+    expect(parseBankTx("GSB NOW", gsbFlex(bothGsb), NOW)).toBeNull();
+    expect(parseBankTx("GSB NOW", gsbFlex([["โปรโมชัน", "สมัครเลย"]]), NOW)).toBeNull();
+    // ยังไม่รู้ template เงินออกของ GSB → FILTER_EVENT ต้อง fail open ต่อ (ไม่ drop)
+    expect(knownBank("GSB NOW")).toBeNull();
+    expect(shouldForwardOaMessage("GSB NOW", null, ["tx_in", "tx_out"])).toBe(true);
+    // แต่ใบที่ parse ได้แล้วต้องถูกกรองด้วย eventType ตามปกติ
+    const tx = parseBankTx("GSB NOW", gsbFlex(GSB_IN), NOW);
+    expect(shouldForwardOaMessage("GSB NOW", tx, ["tx_in"])).toBe(true);
+    expect(shouldForwardOaMessage("GSB NOW", tx, ["tx_out"])).toBe(false);
+  });
+
+  test("non-GSB OAs still take the generic path", () => {
     const nodes = ["เงินเข้า", "+500.00", "จากบัญชี", "SCB x1234", "เข้าบัญชี", "XX7788"]
       .map((text) => ({ type: "text", text }));
-    const tx = parseBankTx("GSB Now", JSON.stringify({ contents: nodes }), NOW)!;
-    expect(tx.bank).toBe("GSB"); // ไม่ใช่ชื่อแชทดิบ "GSB Now"
+    const tx = parseBankTx("KBank LIVE", JSON.stringify({ contents: nodes }), NOW)!;
+    expect(tx.bank).toBe("KBANK"); // ไม่ใช่ชื่อแชทดิบ
     expect(tx.sourceBank).toBe("SCB");
-    expect(tx.destinationBank).toBe("GSB"); // ฝั่งเรา = ตัว OA เอง
-    expect(parseBankTx("ธนาคารออมสิน", JSON.stringify({ contents: nodes }), NOW)!.bank).toBe("GSB");
-    expect(parseBankTx("KBank LIVE", JSON.stringify({ contents: nodes }), NOW)!.bank).toBe("KBANK");
-    // ยังไม่รู้ template ของ GSB → FILTER_EVENT ต้อง fail open ต่อ (ไม่ drop non-tx)
-    expect(knownBank("GSB Now")).toBeNull();
-    expect(shouldForwardOaMessage("GSB Now", null, ["tx_in", "tx_out"])).toBe(true);
+    expect(tx.destinationBank).toBe("KBANK"); // ฝั่งเรา = ตัว OA เอง
   });
 
   test("promo flex messages are rejected", () => {
