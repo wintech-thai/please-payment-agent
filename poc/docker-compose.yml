@@ -33,8 +33,8 @@ services:
       - HTTP_API_KEY=${HTTP_API_KEY:-poc-secret}
       - INSTANCE_ID=${INSTANCE_ID:-poc-001}
       - API_BASE_URL=            # empty → fully standalone
-      # WATCH_CHAT_IDS + BANK_OA_HANDLES come straight from env_file (.env) so an
-      # explicit empty value is respected (no `:-` default overriding it).
+      # WATCH_CHAT_IDS + BANK_OA_MIDS + BANK_OA_HANDLES come straight from env_file
+      # (.env) so an explicit empty value is respected (no `:-` default overriding it).
       - WEBHOOK_URL=http://poc-app:8080/ingest
       # ONIX bank-OA sink → simulated by poc-app. All three enable it.
       - ONIX_API_URL=http://poc-app:8080

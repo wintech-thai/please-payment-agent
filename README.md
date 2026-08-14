@@ -122,7 +122,8 @@ for the full list. Key ones:
 | `ONIX_AGENT_ID` | onix agent UUID that receives `NotifyLineMessage` |
 | `ONIX_API_USER` / `ONIX_API_KEY` | Basic auth for onix (default user `api`; key is the password) |
 | `ONIX_ORG` / `ONIX_APPLICATION_TYPE` | onix path org segment (`global`) / `Onix-Application-Type` header (`backend`) |
-| `BANK_OA_HANDLES` | LINE @handles to follow + watch (default: the 3 bank OAs) |
+| `BANK_OA_HANDLES` | LINE @handles to follow + watch (default: empty/off — `findContactByUserid` can't resolve OA basic-ids) |
+| `BANK_OA_MIDS` | Bank OA mids (`u…`) to watch as `oa` — watched only if the account already added that OA, never auto-followed. SCB `u4ca19114…`, KBank `u8cc52e36…`, Krungthai `uce372f6a…`, GSB/`@gsbnow` `ub2a0ffaa…` |
 | `HTTP_PORT` | Inbound HTTP API port — login + health (default `3000`; `0` disables) |
 | `HTTP_API_USER` / `HTTP_API_KEY` | Basic auth for `/login/*` (default user `api`; unset key = unauthenticated) |
 | `PROXY_URL` | Per-instance proxy (anti-ban) |

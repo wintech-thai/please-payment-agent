@@ -55,7 +55,7 @@ sequenceDiagram
      อยู่ในรายการ (`FILTER_EVENT=tx_in` = เงินเข้าอย่างเดียว)
    - OA ธนาคารที่**รู้ pattern แล้ว** (SCB Connect, Krungthai Connext) แต่ parse ไม่ได้
      (โฆษณา, rich-menu เช่น "เช็กยอด/คะแนน") → **drop** พร้อม log `debug`
-   - OA ที่**ยังไม่รู้ pattern** (เช่น KBank) → **fail open** forward ทุก message เสมอ
+   - OA ที่**ยังไม่รู้ pattern** (เช่น KBank, GSB) → **fail open** forward ทุก message เสมอ
      จนกว่าจะเพิ่ม pattern ใน parser
 
 เฉพาะเส้นทาง **onix** เพิ่มเงื่อนไข:
@@ -84,7 +84,7 @@ sequenceDiagram
   "eventType": "tx_in",               // "tx_in" | "tx_out" — ใช้คู่กับ FILTER_EVENT
   "direction": "in",                  // "in" | "out"
   "amount": 2000.00,                  // number บวกเสมอ
-  "bank": "SCB",                      // "SCB" | "KTB" — map จากชื่อ OA
+  "bank": "SCB",                      // "SCB" | "KTB" | "KBANK" | "GSB" … — map จากชื่อ OA
   "chatName": "SCB Connect",
   "receivedAt": 1784866519351,        // unix ms ตอน worker รับ
   // optional — มีก็ใส่ ไม่มีตัด key ทิ้ง
@@ -107,9 +107,10 @@ sequenceDiagram
 fixtures ของ test: `scripts/fixtures/bank-tx/`) — label กับ value เป็น text-node ติดกันเสมอ
 ถ้าธนาคารเปลี่ยน template แล้ว parse ไม่ได้ ข้อความจะถูก drop พร้อม log ไม่หายเงียบ
 
-## 3. การติดตาม OA ธนาคาร 3 ตัว
+## 3. การติดตาม OA ธนาคารด้วย @handle
 
-`BANK_OA_HANDLES` (default `@scbconnect,@krungthaiconnext,@kbanklive`) กำหนดว่าจะ follow + watch OA ตัวไหน
+`BANK_OA_HANDLES` (default **ว่าง = ปิด**) กำหนดว่าจะ follow + watch OA ตัวไหน — แต่ `findContactByUserid`
+resolve `@basic-id` ของ OA ไม่ได้ ทางที่ใช้งานได้จริงคือ §3a (`BANK_OA_MIDS`)
 
 ตอน boot worker จะรัน `ensureBankOaWatched()` ([../src/index.ts](../src/index.ts)) — **idempotent**:
 
@@ -144,6 +145,15 @@ flowchart TD
   C -->|"มี"| D["getContacts([mid]) → displayName"]
   D --> E["addWatched({chatId: mid, chatType: 'oa', chatName: displayName, enabled: true})"]
 ```
+
+mid ของ bank OA ที่ใช้อยู่ (ยืนยันชื่อจริงจาก boot log ทุกครั้งก่อนเชื่อ):
+
+| ธนาคาร | @handle | mid |
+|---|---|---|
+| SCB | `@scbconnect` | `u4ca19114ed596ee2f4e63335ec7143fb` |
+| KBank | `@kbanklive` | `u8cc52e369d2bca4a5ce8c506170c712e` |
+| Krungthai | `@krungthaiconnext` | `uce372f6ada1d1a0855973fefc2942f9a` |
+| GSB (ออมสิน) | `@gsbnow` | `ub2a0ffaaab7e5bdd10814ec88afe67fc` |
 
 ต่างจาก §3 (`BANK_OA_HANDLES`) ตรงที่ **ไม่ auto-follow** — watch เฉพาะ OA ที่ account **add ไว้แล้ว**;
 mid ที่ยังไม่ได้ add จะถูกข้ามพร้อม log `"Configured OA not in contacts — skipped (customer must add it)"`.
@@ -249,7 +259,9 @@ ONIX_API_USER=api
 ONIX_API_KEY=apikey
 ONIX_APPLICATION_TYPE=backend
 ONIX_FORWARD_TIMEOUT_MS=5000
-BANK_OA_HANDLES=@scbconnect,@krungthaiconnext,@kbanklive
+BANK_OA_HANDLES=
+# mid ของ bank OA ที่จะ watch (§3a) — SCB, KBank, Krungthai, GSB
+BANK_OA_MIDS=u4ca19114ed596ee2f4e63335ec7143fb,u8cc52e369d2bca4a5ce8c506170c712e,uce372f6ada1d1a0855973fefc2942f9a,ub2a0ffaaab7e5bdd10814ec88afe67fc
 # กรอง bank-OA event (§2a): ว่าง = ส่งทุก event ที่ parse ได้; tx_in = เงินเข้าอย่างเดียว
 FILTER_EVENT=tx_in,tx_out
 ```

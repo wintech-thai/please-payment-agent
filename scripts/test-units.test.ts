@@ -3299,6 +3299,20 @@ describe("🏦 bank-tx — parseBankTx()", () => {
     expect(tx.sourceAccount).toBe("x1234");
   });
 
+  test("GSB OA — bank code comes from the OA name, template still unparsed", () => {
+    const nodes = ["เงินเข้า", "+500.00", "จากบัญชี", "SCB x1234", "เข้าบัญชี", "XX7788"]
+      .map((text) => ({ type: "text", text }));
+    const tx = parseBankTx("GSB Now", JSON.stringify({ contents: nodes }), NOW)!;
+    expect(tx.bank).toBe("GSB"); // ไม่ใช่ชื่อแชทดิบ "GSB Now"
+    expect(tx.sourceBank).toBe("SCB");
+    expect(tx.destinationBank).toBe("GSB"); // ฝั่งเรา = ตัว OA เอง
+    expect(parseBankTx("ธนาคารออมสิน", JSON.stringify({ contents: nodes }), NOW)!.bank).toBe("GSB");
+    expect(parseBankTx("KBank LIVE", JSON.stringify({ contents: nodes }), NOW)!.bank).toBe("KBANK");
+    // ยังไม่รู้ template ของ GSB → FILTER_EVENT ต้อง fail open ต่อ (ไม่ drop non-tx)
+    expect(knownBank("GSB Now")).toBeNull();
+    expect(shouldForwardOaMessage("GSB Now", null, ["tx_in", "tx_out"])).toBe(true);
+  });
+
   test("promo flex messages are rejected", () => {
     expect(parseBankTx("SCB Connect", fixture("scb_promo_activate.txt"), NOW)).toBeNull();
     expect(parseBankTx("SCB Connect", fixture("scb_promo_intro.txt"), NOW)).toBeNull();
