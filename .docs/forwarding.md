@@ -55,8 +55,14 @@ sequenceDiagram
      อยู่ในรายการ (`FILTER_EVENT=tx_in` = เงินเข้าอย่างเดียว)
    - OA ธนาคารที่**รู้ pattern แล้ว** (SCB Connect, Krungthai Connext) แต่ parse ไม่ได้
      (โฆษณา, rich-menu เช่น "เช็กยอด/คะแนน") → **drop** พร้อม log `debug`
-   - OA ที่**ยังไม่รู้ pattern** (เช่น KBank, GSB) → **fail open** forward ทุก message เสมอ
+   - OA ที่**ยังไม่รู้ pattern ครบ** (เช่น KBank, GSB) → **fail open** forward ทุก message เสมอ
      จนกว่าจะเพิ่ม pattern ใน parser
+
+**GSB NOW** ใช้ template คนละแบบ (ไม่มีหัวข้อ `เงินเข้า/ออก` และจำนวนเงินไม่มีเครื่องหมาย
+`"21.91 บาท"`) จึงมี reader แยก `parseGsbTx()` — อ่านทิศทางจากว่าฝั่งไหนเป็นบัญชี GSB
+(`เข้าบัญชี` = บัญชีเรา → `tx_in`) และเลขบัญชีมาเป็น `SCBA 0003XXXX9148` (bank code 4 ตัว +
+เลข mask กลาง) ตอนนี้รองรับ **เงินเข้าอย่างเดียว** — ยังไม่มีตัวอย่างเงินออก และรายการ GSB→GSB
+แยกทิศทางจากบับเบิลไม่ได้ ทั้งสองกรณีคืน `null` → `knownBank()` ยังเป็น `null` เพื่อให้ fail open
 
 เฉพาะเส้นทาง **onix** เพิ่มเงื่อนไข:
 
