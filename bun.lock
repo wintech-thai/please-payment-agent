@@ -5,8 +5,8 @@
     "": {
       "name": "rlbotline-worker",
       "dependencies": {
-        "@evex/linejs": "npm:@jsr/evex__linejs@^2.18.0",
-        "@evex/linejs-types": "npm:@jsr/evex__linejs-types@^2.18.0",
+        "@evex/linejs": "npm:@jsr/evex__linejs@^3.2.1",
+        "@evex/linejs-types": "npm:@jsr/evex__linejs-types@^3.2.1",
       },
       "devDependencies": {
         "@types/bun": "latest",
@@ -15,11 +15,11 @@
     },
   },
   "packages": {
-    "@evex/linejs": ["@jsr/evex__linejs@2.18.0", "https://npm.jsr.io/~/11/@jsr/evex__linejs/2.18.0.tgz", { "dependencies": { "@jsr/evex__linejs-types": "^2.18.0", "@jsr/evex__loose-types": "^1.0.1", "@noble/ciphers": "^2.2", "@types/node-int64": "^0.4.32", "@types/thrift": "^0.10.17", "crypto-js": "^4.2.0", "curve25519-js": "^0.0.4", "node-bignumber": "^1.2.2", "node-int64": "^0.4.0", "opusscript": "^0.1.1", "thrift": "^0.20.0", "tweetnacl": "^1.0.3", "undici": "^7" } }, "sha512-kj7ha9UtimkkX2e5BnrG1UNXy5E3oRsmUVaFE4PTYz3jId/i3dNupgsfUZf2UDgKUVOnskqMg8bBfqsSSP8B6Q=="],
+    "@evex/linejs": ["@jsr/evex__linejs@3.2.1", "https://npm.jsr.io/~/11/@jsr/evex__linejs/3.2.1.tgz", { "dependencies": { "@jsr/evex__linejs-types": "^3.2.1", "@jsr/evex__loose-types": "^1.0.1", "@noble/ciphers": "^2.2", "@types/node-int64": "^0.4.32", "@types/thrift": "^0.10.17", "crypto-js": "^4.2.0", "curve25519-js": "^0.0.4", "node-bignumber": "^1.2.2", "node-int64": "^0.4.0", "opusscript": "^0.1.1", "thrift": "^0.20.0", "tweetnacl": "^1.0.3", "undici": "^7" } }, "sha512-a7KVMIvUlaWOHZT0G0Utur7BUDE5T9Io8bvD93L8q6YSYzvIgmHQklYnsVVR47uMuvKZYCKyWlV30nYM8to+Dg=="],
 
-    "@evex/linejs-types": ["@jsr/evex__linejs-types@2.18.0", "https://npm.jsr.io/~/11/@jsr/evex__linejs-types/2.18.0.tgz", { "dependencies": { "@jsr/evex__loose-types": "^1.0.1" } }, "sha512-iBm9ZYasFZvfFgcFPqfP12HfStmDw7fUu6FZJcsJwVCRpwH7k5wUH9uVc1bbRbSIaozsFF/fVWkVzbsmPC+ygQ=="],
+    "@evex/linejs-types": ["@jsr/evex__linejs-types@3.2.1", "https://npm.jsr.io/~/11/@jsr/evex__linejs-types/3.2.1.tgz", { "dependencies": { "@jsr/evex__loose-types": "^1.0.1" } }, "sha512-qYiZh7VPbAnnUW912rNVIzFUZYnMKUkablj8/rczBfj/GA8iZPnfiYgRuFw/zgJkViCF82RNpS22xcSbCReyEg=="],
 
-    "@jsr/evex__linejs-types": ["@jsr/evex__linejs-types@2.18.0", "https://npm.jsr.io/~/11/@jsr/evex__linejs-types/2.18.0.tgz", { "dependencies": { "@jsr/evex__loose-types": "^1.0.1" } }, "sha512-iBm9ZYasFZvfFgcFPqfP12HfStmDw7fUu6FZJcsJwVCRpwH7k5wUH9uVc1bbRbSIaozsFF/fVWkVzbsmPC+ygQ=="],
+    "@jsr/evex__linejs-types": ["@jsr/evex__linejs-types@3.2.1", "https://npm.jsr.io/~/11/@jsr/evex__linejs-types/3.2.1.tgz", { "dependencies": { "@jsr/evex__loose-types": "^1.0.1" } }, "sha512-qYiZh7VPbAnnUW912rNVIzFUZYnMKUkablj8/rczBfj/GA8iZPnfiYgRuFw/zgJkViCF82RNpS22xcSbCReyEg=="],
 
     "@jsr/evex__loose-types": ["@jsr/evex__loose-types@1.0.1", "https://npm.jsr.io/~/11/@jsr/evex__loose-types/1.0.1.tgz", {}, "sha512-ENNSHt+xHtkMJj+wp4dGWpLVY3J/BPSfXOo2u6ObFCuLN/hL71HUNQ/xB32jiqQj+u8nqWlGuenH1toFLDYM6Q=="],
 
