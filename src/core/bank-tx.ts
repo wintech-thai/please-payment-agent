@@ -19,7 +19,7 @@ export interface BankTx {
   direction: "in" | "out";
   /** Transaction amount, always positive (sign lives in `direction`). */
   amount: number;
-  /** "SCB" | "KTB" — mapped from the OA name; falls back to the raw chat name. */
+  /** "SCB" | "KTB" | "GSB" | … — mapped from the OA name; falls back to the raw chat name. */
   bank: string;
   chatName: string;
   /** Unix ms — receive time at the worker. */
@@ -109,7 +109,12 @@ function splitAccount(s: string): { account: string; name?: string } {
   return { account: m[0], name: name || undefined };
 }
 
-/** Bank code for OAs whose message templates we can parse; null = unknown pattern. */
+/**
+ * Bank code for OAs whose message templates we can PARSE; null = unknown pattern.
+ * Narrower than `detectBank()` on the chat name: this gates the FILTER_EVENT
+ * drop (see `shouldForwardOaMessage`), so an OA we can recognize by name but
+ * not parse (GSB, KBank) must stay null and keep failing open.
+ */
 export function knownBank(chatName: string): "SCB" | "KTB" | null {
   if (/scb/i.test(chatName)) return "SCB";
   if (/krungthai|ktb/i.test(chatName)) return "KTB";
@@ -166,7 +171,9 @@ export function parseBankTx(
     return i >= 0 ? trimmed[i + 1] : undefined;
   };
 
-  const bank = knownBank(chatName) ?? chatName;
+  // Which bank sent this — from the OA's own display name, so an OA we can
+  // name but not parse yet (GSB Now, KBank LIVE) still reports a bank code.
+  const bank = detectBank(chatName) ?? chatName;
 
   const tx: BankTx = {
     event: "bank_tx",
@@ -199,9 +206,9 @@ export function parseBankTx(
   // its account text (falling back to memo — SCB out only names the target
   // bank inside "รายการ", e.g. "DSC-โอนไป KTB x3090 ...").
   tx.sourceBank =
-    (direction === "in" ? detectBank(sourceRaw) : knownBank(chatName)) ?? "unknown";
+    (direction === "in" ? detectBank(sourceRaw) : detectBank(chatName)) ?? "unknown";
   tx.destinationBank =
-    (direction === "in" ? knownBank(chatName) : detectBank(destinationRaw ?? memo)) ?? "unknown";
+    (direction === "in" ? detectBank(chatName) : detectBank(destinationRaw ?? memo)) ?? "unknown";
 
   const account = direction === "in" ? destination?.account : source?.account;
   if (account) tx.account = account;

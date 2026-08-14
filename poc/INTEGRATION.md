@@ -146,7 +146,7 @@ Redis ใน compose ใช้ `--appendonly yes` + named volume `redis-data` �
 
 ---
 
-## 3. Add + watch bank OA (3 official)
+## 3. Add + watch bank OA (4 official)
 
 worker forward เฉพาะข้อความจากแชทที่อยู่ใน **watched registry** เท่านั้น. bank OA เข้า registry ได้ 2 ทาง:
 
@@ -172,8 +172,15 @@ BANK_OA_HANDLES=@scbconnect,@krungthaiconnext,@kbanklive
 ก่อน watch (ไม่ auto-follow):
 
 ```dotenv
-BANK_OA_MIDS=u4ca19114ed596ee2f4e63335ec7143fb,u8cc52e369d2bca4a5ce8c506170c712e,uce372f6ada1d1a0855973fefc2942f9a
+BANK_OA_MIDS=u4ca19114ed596ee2f4e63335ec7143fb,u8cc52e369d2bca4a5ce8c506170c712e,uce372f6ada1d1a0855973fefc2942f9a,ub2a0ffaaab7e5bdd10814ec88afe67fc
 ```
+
+| ธนาคาร | @handle | mid |
+|---|---|---|
+| SCB | `@scbconnect` | `u4ca19114ed596ee2f4e63335ec7143fb` |
+| KBank | `@kbanklive` | `u8cc52e369d2bca4a5ce8c506170c712e` |
+| Krungthai | `@krungthaiconnext` | `uce372f6ada1d1a0855973fefc2942f9a` |
+| GSB (ออมสิน) | `@gsbnow` | `ub2a0ffaaab7e5bdd10814ec88afe67fc` |
 
 ตอน boot `ensureConfiguredOaWatched()` ทำ: `getAllContactIds()` → ถ้า mid **อยู่ใน contact** → watch เป็น
 `chatType:"oa"` + ชื่อจริง (เข้า ONIX §4.2 ได้); ถ้า **ไม่อยู่** → ข้าม (ไม่ watch, ไม่ add — ให้ลูกค้า add เอง).
@@ -339,7 +346,7 @@ REDIS_KEY_PREFIX=                # default rlbotline:${INSTANCE_ID}
 
 # --- watch bank OA / chats ---
 BANK_OA_MIDS=                    # mid ของ bank OA (verified — ไม่ auto-follow) §3.1b
-BANK_OA_HANDLES=@scbconnect,@krungthaiconnext,@kbanklive   # @handle resolve ไม่ได้ (ดู §3.1)
+BANK_OA_HANDLES=                 # ปล่อยว่าง — @handle resolve ไม่ได้ (ดู §3.1)
 WATCH_CHAT_IDS=                  # fallback: watch มือ (comma-separated)
 
 # --- logging ---

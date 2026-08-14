@@ -61,7 +61,7 @@ poc-app also stands in as the **ONIX destination server**. The worker's onix-cli
 sourceLabel, title, text}`). The sim records each call and shows it in **section 4** with an
 `auth ✓/✗` flag. Enabled by the `ONIX_*` env in the compose file.
 
-ONIX only fires for watched **OA** chats (from `BANK_OA_HANDLES`), so a real test needs an actual
+ONIX only fires for watched **OA** chats (from `BANK_OA_MIDS`), so a real test needs an actual
 bank-OA message. To self-test the sim endpoint without one:
 
 ```bash
