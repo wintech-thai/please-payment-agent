@@ -20,8 +20,8 @@
     "docker:logs": "docker compose -f docker-compose.dev.yml logs -f worker"
   },
   "dependencies": {
-    "@evex/linejs": "npm:@jsr/evex__linejs@^2.18.0",
-    "@evex/linejs-types": "npm:@jsr/evex__linejs-types@^2.18.0"
+    "@evex/linejs": "npm:@jsr/evex__linejs@^3.2.1",
+    "@evex/linejs-types": "npm:@jsr/evex__linejs-types@^3.2.1"
   },
   "devDependencies": {
     "@types/bun": "latest",

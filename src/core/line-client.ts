@@ -337,7 +337,7 @@ type LoginAttemptOutcome =
  * mean the server flatly rejected the credentials (wrong password / no such
  * account). linejs surfaces these as `InternalError("RequestError", ..., data)`
  * where `data.code` carries the raw thrift exception code (see
- * `@evex/linejs` `base/request/mod.ts` ~L244-251). These codes are NOT
+ * `@evex/linejs` `base/request/mod.ts` ~L244-260). These codes are NOT
  * live-captured against this codebase's own traffic (unlike `LineOpType` —
  * see `.research/line-op-type-verification.md`); they're the stable,
  * widely-documented LINE TalkService codes used across other LINE client
