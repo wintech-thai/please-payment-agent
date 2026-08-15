@@ -3325,6 +3325,14 @@ describe("🏦 bank-tx — parseBankTx()", () => {
     ["จำนวนเงิน", "21.91 บาท"],
   ];
 
+  // ขาออก: บัญชีเราย้ายไปอยู่ "จากบัญชี" ส่วนปลายทางยังใช้ label "เข้าบัญชี" เหมือนเดิม
+  const GSB_OUT: Array<[string, string]> = [
+    ["จากบัญชี", "GSBA 0204XXXX6703"],
+    ["เข้าบัญชี", "SCBA 0088XXXX9219"],
+    ["วันที่ / เวลา", "15 ส.ค. 2569 09:05 น."],
+    ["จำนวนเงิน", "-5,000.04 บาท"],
+  ];
+
   test("GSB in — no direction header, unsigned amount, 4-letter bank codes", () => {
     const tx = parseBankTx("GSB NOW", gsbFlex(GSB_IN), NOW)!;
     expect(tx.eventType).toBe("tx_in"); // อนุมานจาก "เข้าบัญชี" เป็นบัญชี GSBA
@@ -3344,12 +3352,36 @@ describe("🏦 bank-tx — parseBankTx()", () => {
     expect(tx.balance).toBe(1234.56);
   });
 
+  test("GSB out — counterparty still sits under 'เข้าบัญชี', amount is negative", () => {
+    const tx = parseBankTx("GSB NOW", gsbFlex(GSB_OUT), NOW)!;
+    expect(tx.eventType).toBe("tx_out"); // "จากบัญชี" เป็น GSBA + ยอดติดลบ
+    expect(tx.amount).toBe(5000.04); // เก็บเป็นบวกเสมอ เครื่องหมายอยู่ที่ direction
+    expect(tx.bank).toBe("GSB");
+    expect(tx.sourceBank).toBe("GSB");
+    expect(tx.destinationBank).toBe("SCB"); // ปลายทางอยู่ใต้ label "เข้าบัญชี" ไม่ใช่ "ไปยังบัญชี"
+    expect(tx.sourceAccount).toBe("0204XXXX6703");
+    expect(tx.destinationAccount).toBe("0088XXXX9219");
+    expect(tx.account).toBe("0204XXXX6703"); // ขาออก บัญชีเรา = ฝั่งต้นทาง
+    expect(tx.txDate).toBe("15 ส.ค. 2569 09:05 น.");
+  });
+
+  test("GSB — GSB→GSB has no side signal, so the amount sign decides", () => {
+    const rows = (amount: string): Array<[string, string]> => [
+      ["จากบัญชี", "GSBA 0204XXXX6703"],
+      ["เข้าบัญชี", "GSBA 0204XXXX9999"],
+      ["จำนวนเงิน", amount],
+    ];
+    expect(parseBankTx("GSB NOW", gsbFlex(rows("-500.00 บาท")), NOW)!.eventType).toBe("tx_out");
+    expect(parseBankTx("GSB NOW", gsbFlex(rows("500.00 บาท")), NOW)!.eventType).toBe("tx_in");
+  });
+
   test("GSB — ambiguous / non-tx bubbles stay null and keep failing open", () => {
-    // ไม่มีฝั่ง GSB = ไม่ใช่บัญชีเรา, และ GSB→GSB แยกทิศทางไม่ได้ → null ทั้งคู่
+    // ไม่มีฝั่ง GSB เลย = ไม่ใช่บัญชีเรา
     const noGsb: Array<[string, string]> = [["จากบัญชี", "SCBA 0003XXXX9148"], ["เข้าบัญชี", "KBAN 0011XXXX2200"], ["จำนวนเงิน", "21.91 บาท"]];
-    const bothGsb: Array<[string, string]> = [["จากบัญชี", "GSBA 0204XXXX5046"], ["เข้าบัญชี", "GSBA 0204XXXX9999"], ["จำนวนเงิน", "21.91 บาท"]];
+    // ฝั่งบอก "เข้า" (GSB อยู่ปลายทาง) แต่ยอดติดลบ — ขัดกันเอง อย่าเดา
+    const conflicting: Array<[string, string]> = [["จากบัญชี", "SCBA 0003XXXX9148"], ["เข้าบัญชี", "GSBA 0204XXXX5046"], ["จำนวนเงิน", "-21.91 บาท"]];
     expect(parseBankTx("GSB NOW", gsbFlex(noGsb), NOW)).toBeNull();
-    expect(parseBankTx("GSB NOW", gsbFlex(bothGsb), NOW)).toBeNull();
+    expect(parseBankTx("GSB NOW", gsbFlex(conflicting), NOW)).toBeNull();
     expect(parseBankTx("GSB NOW", gsbFlex([["โปรโมชัน", "สมัครเลย"]]), NOW)).toBeNull();
     // ยังไม่รู้ template เงินออกของ GSB → FILTER_EVENT ต้อง fail open ต่อ (ไม่ drop)
     expect(knownBank("GSB NOW")).toBeNull();

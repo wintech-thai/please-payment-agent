@@ -131,42 +131,66 @@ function parseGsbAccount(raw: string | undefined): { account?: string; bank?: st
 }
 
 /**
- * GSB Now template: label/value rows only — no "เงินเข้า" header and an
- * unsigned amount ("21.91 บาท"), so the generic reader below can't touch it.
- * Direction comes from which side holds the GSB account, since the OA only
- * notifies its own account holder: "เข้าบัญชี" is ours → money in.
+ * Direction of a GSB bubble. GSB labels the counterparty "เข้าบัญชี" in BOTH
+ * directions (there is no "ไปยังบัญชี" row), so the label carries no direction.
+ * Two independent signals do, and they must agree:
+ *  - which side holds the GSB account, since the OA only notifies its own
+ *    account holder — "จากบัญชี" is ours → money out
+ *  - the amount sign: "-5,000.04 บาท" = out, "21.91 บาท" (unsigned) = in
  *
- * Only tx_in is recognized. We have no captured เงินออก sample yet, and a
- * GSB→GSB transfer is genuinely ambiguous from the bubble alone; both return
- * null, which leaves the message forwarded unfiltered (`shouldForwardOaMessage`
- * fails open for GSB because `knownBank` stays null).
+ * A GSB→GSB transfer has no usable side signal and rides on the sign alone.
+ * Neither side GSB, or the two signals disagreeing, returns null — which keeps
+ * the message forwarded unfiltered rather than mislabelled.
+ */
+function gsbDirection(
+  sourceBank: string | undefined,
+  destinationBank: string | undefined,
+  negative: boolean,
+): "in" | "out" | null {
+  const bySign = negative ? "out" : "in";
+  const ourSource = sourceBank === "GSB";
+  const ourDestination = destinationBank === "GSB";
+  if (!ourSource && !ourDestination) return null;
+  if (ourSource && ourDestination) return bySign;
+  const bySide = ourDestination ? "in" : "out";
+  return bySide === bySign ? bySide : null;
+}
+
+/**
+ * GSB Now template: label/value rows only — no "เงินเข้า" header, so the
+ * generic reader below can't touch it. See `gsbDirection` for how in/out is
+ * recovered without a direction header.
  */
 function parseGsbTx(chatName: string, trimmed: string[], receivedAt: number): BankTx | null {
   const v = (label: RegExp): string | undefined => valueAfterIn(trimmed, label);
 
   const source = parseGsbAccount(v(/^จากบัญชี$/));
   const destination = parseGsbAccount(v(/^เข้าบัญชี$/));
-  if (destination.bank !== "GSB" || source.bank === "GSB") return null;
 
-  const amount = parseAmount(v(/^จำนวนเงิน$/));
+  const amountRaw = v(/^จำนวนเงิน$/);
+  const amount = parseAmount(amountRaw);
   if (amount === undefined || amount <= 0) return null;
+
+  const direction = gsbDirection(source.bank, destination.bank, /^-/.test(amountRaw!.trim()));
+  if (!direction) return null;
 
   const tx: BankTx = {
     event: "bank_tx",
-    eventType: "tx_in",
-    direction: "in",
+    eventType: direction === "in" ? "tx_in" : "tx_out",
+    direction,
     amount,
     bank: "GSB",
     chatName,
     receivedAt,
     sourceBank: source.bank ?? "unknown",
-    destinationBank: "GSB",
+    destinationBank: destination.bank ?? "unknown",
   };
   if (source.account) tx.sourceAccount = source.account;
-  if (destination.account) {
-    tx.destinationAccount = destination.account;
-    tx.account = destination.account;
-  }
+  if (destination.account) tx.destinationAccount = destination.account;
+  // Our side of the transfer — GSB is the OA, so it's whichever side is GSB.
+  const account = direction === "in" ? destination.account : source.account;
+  if (account) tx.account = account;
+
   const txDate = v(/^วันที่\s*\/\s*เวลา$/);
   if (txDate) tx.txDate = txDate;
   const balance = parseAmount(v(BALANCE_LABEL));
@@ -180,7 +204,8 @@ function parseGsbTx(chatName: string, trimmed: string[], receivedAt: number): Ba
  * the rest; null = unknown pattern. Narrower than `detectBank()` on the chat
  * name: this gates the FILTER_EVENT drop (see `shouldForwardOaMessage`), so an
  * OA we can recognize by name but not fully parse must stay null and keep
- * failing open — GSB is here (tx_in only, no เงินออก sample yet), KBank too.
+ * failing open — KBank is here, and GSB too: both tx directions parse now, but
+ * we have no captured GSB promo/rich-menu message proving the drop is safe.
  */
 export function knownBank(chatName: string): "SCB" | "KTB" | null {
   if (/scb/i.test(chatName)) return "SCB";
