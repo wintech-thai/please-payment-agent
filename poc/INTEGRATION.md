@@ -26,16 +26,20 @@ worker เปิด HTTP API บน `HTTP_PORT` (default `3000`). Endpoint ท�
 
 | Method | Path | Auth | Body | Response |
 |---|---|---|---|---|
-| GET | `/health` | เปิด | — | `{ok, instanceId, uptimeSec, login}` |
+| GET | `/health` | เปิด | — | `{ok, instanceId, uptimeSec, login, connection, lastSyncAgoSec}` — **503** เมื่อ `ok:false` |
 | GET | `/status` | Basic | — | ใครล็อกอินอยู่ + build ที่ deploy + สถานะ session/forward/onix/watched (ดู §1.4) |
-| GET | `/login/status` | Basic | — | `{ok, state, qrUrl?, pincode?, profileName?, profileMid?, error?, updatedAt}` |
+| GET | `/login/status` | Basic | — | `{ok, state, loggedIn, connection, lastSyncAgoSec, qrUrl?, pincode?, profileName?, profileMid?, error?, updatedAt}` |
 | POST | `/login/qr` | Basic | — | `202 {ok, state, qrUrl?}` (รอ QR URL สูงสุด ~12s) |
 | POST | `/login/password` | Basic | `{email, password}` | `202 {ok, state}` |
 
 **Auth:** `/login/*` ใช้ HTTP Basic `api:HTTP_API_KEY` (เมื่อตั้ง `HTTP_API_KEY`); ถ้าไม่ตั้ง = เปิดโล่ง (log warning).
 `/health` เปิดเสมอ.
 
-**login state:** `idle → starting → qr_pending / pin_pending → ready` (หรือ `error`)
+**login state:** `idle → starting → qr_pending / pin_pending → ready` (หรือ `error`) — และ `ready → expired`
+เมื่อ LINE เพิกถอน session ทีหลัง (ดู §1.5)
+
+> ⚠️ **อย่าเช็ก `state === "ready"` เพียงอย่างเดียว** มันบอกแค่ว่า *ความพยายาม login ครั้งล่าสุด* สำเร็จ
+> ให้ใช้ **`loggedIn`** ซึ่งเป็น `state === "ready" && session ยัง healthy`
 
 ### 1.1 QR login
 
@@ -95,6 +99,165 @@ docker compose up --build -d
 ```
 
 > `dirty: true` = image ถูก build ตอนที่ working tree มีของแก้ยังไม่ commit — commit ที่รายงานจึงไม่ตรงกับโค้ดจริงเป๊ะ
+
+### 1.5 สถานะการเชื่อมต่อ LINE (`connection`) — ปลายทางต้องอ่านอันนี้
+
+`login.state` บอกว่า *login ครั้งล่าสุดจบยังไง* ส่วน **`connection` บอกว่าตอนนี้ LINE ยังคุยกับบอทอยู่ไหม**
+ค่านี้มาจาก poll loop ซึ่งเป็นส่วนเดียวของ worker ที่รู้ความจริงข้อนี้ (`src/core/session-health.ts`)
+
+| `connection` | แปลว่า | `/health` | `loggedIn` | ปลายทางควรทำ |
+|---|---|---|---|---|
+| `idle` | poll loop ยังไม่เริ่ม (เพิ่งบูต / รอสแกน QR) | 200 | `false` | แสดงหน้าจอ login ตามปกติ |
+| `online` | sync ล่าสุดยังสด | 200 | `true` | ปกติ |
+| `degraded` | ล้มเหลวอยู่ แต่ยังไม่ถึง 3 นาที | 200 | `true` | ไม่ต้องทำอะไร (network สะดุดเป็นเรื่องปกติ) |
+| `stalled` | ไม่ได้คุยกับ LINE เกิน 3 นาที (รวมกรณี `sync()` ค้างไม่ตอบ) | **503** | `false` | เตือนว่าบอทไม่รับข้อความ — worker กำลังกู้เอง (resync → restart) **ยังไม่ต้องให้ผู้ใช้ login ใหม่** |
+| `expired` | LINE ปฏิเสธ session (`NOT_AUTHORIZED_DEVICE` / `AUTHENTICATION_FAILED`) | **503** | `false` | ขึ้น QR ให้ผู้ใช้ login ใหม่ |
+
+- `expired` จะปลด `login.state` จาก `ready` เป็น `expired` ด้วย และถ้า LINE กลับมาตอบเองจะเลื่อนกลับเป็น
+  `ready` อัตโนมัติ — ปลายทางไม่ต้องมี logic รีเซ็ตเอง
+- `/health` เป็น endpoint เดียวที่เปลี่ยน **status code** (200 ↔ 503) — Docker HEALTHCHECK ใช้ตัวนี้
+  ส่วน `/status` กับ `/login/status` ยังตอบ 200 เสมอ ให้ดูที่ `loggedIn` / `connection` ในตัว body
+- **ไม่มี field เดิมถูกลบหรือเปลี่ยนความหมาย** — ของเก่าที่อ่าน `state`, `qrUrl`, `pincode`, `profileName`
+  ยังทำงานเหมือนเดิม `loggedIn` / `connection` / `lastSyncAgoSec` เป็นของใหม่ที่เพิ่มเข้ามา
+
+#### ตัวอย่าง response จริง
+
+**A. บูตแล้ว ยังไม่ login**
+```jsonc
+// GET /health → 200
+{ "ok": true, "instanceId": "bot-001", "uptimeSec": 3, "login": "idle",
+  "connection": "idle", "lastSyncAgoSec": null }
+
+// GET /login/status → 200
+{ "ok": true, "state": "idle", "updatedAt": 0,
+  "loggedIn": false, "connection": "idle", "lastSyncAgoSec": null }
+```
+
+**B. รอสแกน QR** — `/health` ยัง 200 (container ที่รอคนสแกนคือทำงานถูกแล้ว)
+```jsonc
+// GET /health → 200
+{ "ok": true, "instanceId": "bot-001", "uptimeSec": 12, "login": "qr_pending",
+  "connection": "idle", "lastSyncAgoSec": null }
+
+// GET /login/status → 200
+{ "ok": true, "state": "qr_pending", "updatedAt": 1788431084247,
+  "qrUrl": "https://line.me/R/au/lgn/sq/SQ123?secret=xxx&e2eeVersion=1",
+  "loggedIn": false, "connection": "idle", "lastSyncAgoSec": null }
+```
+
+**C. login แล้ว poll ปกติ**
+```jsonc
+// GET /health → 200
+{ "ok": true, "instanceId": "bot-001", "uptimeSec": 300, "login": "ready",
+  "connection": "online", "lastSyncAgoSec": 0 }
+
+// GET /login/status → 200
+{ "ok": true, "state": "ready", "updatedAt": 1788431084247,
+  "profileName": "สมชาย", "profileMid": "u1f2e3d4c5b6a7988",
+  "loggedIn": true, "connection": "online", "lastSyncAgoSec": 0 }
+
+// GET /status → 200 (ตัดเฉพาะสองบล็อกแรก — ที่เหลือดู §1.4)
+{
+  "ok": true, "instanceId": "bot-001", "botName": "ร้านสาขา 1", "uptimeSec": 300,
+  "login": {
+    "loggedIn": true, "state": "ready",
+    "profileName": "สมชาย", "profileMid": "u1f2e3d4c5b6a7988",
+    "awaitingScan": false, "awaitingPin": false, "expired": false,
+    "updatedAt": 1788431084247
+  },
+  "connection": {
+    "state": "online", "healthy": true, "pollLoopRunning": true,
+    "lastSyncOkAt": 1788431084247, "lastSyncAgoSec": 0,
+    "stalledSec": 0, "consecutiveFailures": 0
+  }
+  // build / session / forward / onix / centralApi / watched …
+}
+```
+
+**D. poll ล้มเหลว 1 รอบ** — สะดุดครั้งเดียวต้องไม่ทำให้ container ล้ม
+```jsonc
+// GET /health → 200
+{ "ok": true, "instanceId": "bot-001", "uptimeSec": 305, "login": "ready",
+  "connection": "degraded", "lastSyncAgoSec": 5 }
+```
+
+**E. เงียบเกิน 3 นาที (บอทหูหนวก แต่ session ยังไม่ตาย)**
+```jsonc
+// GET /health → 503
+{ "ok": false, "instanceId": "bot-001", "uptimeSec": 500, "login": "ready",
+  "connection": "stalled", "lastSyncAgoSec": 200,
+  "error": "fetch failed: ECONNRESET" }
+
+// GET /login/status → 200   ← state ยัง ready แต่ loggedIn=false
+{ "ok": true, "state": "ready", "updatedAt": 1788431084247,
+  "profileName": "สมชาย", "profileMid": "u1f2e3d4c5b6a7988",
+  "loggedIn": false, "connection": "stalled", "lastSyncAgoSec": 200 }
+
+// GET /status → 200 (บล็อก connection)
+"connection": {
+  "state": "stalled", "healthy": false, "pollLoopRunning": true,
+  "lastSyncOkAt": 1788431084247, "lastSyncAgoSec": 200,
+  "stalledSec": 200, "consecutiveFailures": 1,
+  "lastError": "fetch failed: ECONNRESET"
+}
+```
+
+**F. LINE เพิกถอน session — เคสที่เคยรายงานผิดว่า `ready`**
+```jsonc
+// GET /health → 503
+{ "ok": false, "instanceId": "bot-001", "uptimeSec": 900, "login": "expired",
+  "connection": "expired", "lastSyncAgoSec": 12,
+  "error": "TalkException: NOT_AUTHORIZED_DEVICE" }
+
+// GET /login/status → 200
+{ "ok": true, "state": "expired", "updatedAt": 1788431084250,
+  "profileName": "สมชาย", "profileMid": "u1f2e3d4c5b6a7988",
+  "error": "LINE session หมดอายุ/ถูกเพิกถอน — ต้อง login ใหม่",
+  "loggedIn": false, "connection": "expired", "lastSyncAgoSec": 12 }
+
+// GET /status → 200 (สองบล็อกแรก)
+"login": {
+  "loggedIn": false, "state": "expired",
+  "profileName": "สมชาย", "profileMid": "u1f2e3d4c5b6a7988",
+  "awaitingScan": false, "awaitingPin": false, "expired": true,
+  "error": "LINE session หมดอายุ/ถูกเพิกถอน — ต้อง login ใหม่",
+  "updatedAt": 1788431084250
+},
+"connection": {
+  "state": "expired", "healthy": false, "pollLoopRunning": true,
+  "lastSyncOkAt": 1788431084247, "lastSyncAgoSec": 12,
+  "stalledSec": 5, "consecutiveFailures": 1,
+  "lastError": "TalkException: NOT_AUTHORIZED_DEVICE"
+}
+```
+
+**G. LINE กลับมาตอบเอง** — ไม่ต้อง login ใหม่ ไม่ต้อง restart
+```jsonc
+// GET /health → 200
+{ "ok": true, "instanceId": "bot-001", "uptimeSec": 960, "login": "ready",
+  "connection": "online", "lastSyncAgoSec": 0 }
+
+// GET /login/status → 200
+{ "ok": true, "state": "ready", "updatedAt": 1788431084251,
+  "profileName": "สมชาย", "profileMid": "u1f2e3d4c5b6a7988",
+  "loggedIn": true, "connection": "online", "lastSyncAgoSec": 0 }
+```
+
+#### ตัวอย่างฝั่งปลายทาง
+
+```ts
+const s = await fetch("/login/status", { headers: auth }).then((r) => r.json());
+
+if (s.loggedIn) {
+  // ใช้งานได้ปกติ
+} else if (s.state === "expired" || s.state === "error" || s.state === "idle") {
+  showQrLogin();                       // ต้องให้ผู้ใช้ login ใหม่
+} else if (s.connection === "stalled") {
+  showWarning("บอทไม่ได้รับข้อความจาก LINE — กำลังกู้อัตโนมัติ");   // ยังไม่ต้อง login ใหม่
+} else {
+  showPending(s.state);                // starting / qr_pending / pin_pending
+}
+```
 
 ### 1.3 ผ่าน proxy ของ POC (ซ่อน API key จาก browser)
 

@@ -5,7 +5,7 @@
  * `HTTP_PORT` (default 3000). It lets whoever runs the container drive login
  * over HTTP instead of a control-plane WS RPC:
  *
- *   GET  /health           → liveness + current login state (no auth)
+ *   GET  /health           → liveness + LINE connection health (no auth, 503 when dead)
  *   GET  /status           → who is logged in, deployed build, downstream wiring
  *   GET  /login/status     → full login status (qrUrl / pincode / profile)
  *   POST /login/qr         → start a QR login; waits briefly for the QR URL
@@ -16,10 +16,17 @@
  *
  * Login runs in the background — the QR URL, PIN, and result are read back via
  * `/login/status` (and mirrored to the control-plane webhook as before).
+ *
+ * **`login.state` alone is not the connection status.** It records how the last
+ * login ATTEMPT ended; whether LINE still answers is observed by the poll loop
+ * and published by `session-health.ts`. Every endpoint here reports both, and
+ * `loggedIn` is the conjunction — a bot whose session was revoked used to keep
+ * reporting `ready` forever because nothing but a login could move that field.
  */
 
 import { logger } from "./logger.js";
 import { getLoginStatus } from "./login-state.js";
+import { getSessionHealth } from "./session-health.js";
 import { startQrLogin, startPasswordLogin } from "./line-client.js";
 import { getBuildInfo } from "./build-info.js";
 import { isRedisEnabled, redisKey } from "./redis-client.js";
@@ -73,13 +80,29 @@ async function handle(req: Request, config: WorkerConfig): Promise<Response> {
   const path = new URL(req.url).pathname;
 
   // Liveness — always open so container/orchestrator health checks work.
+  //
+  // Answers 503 when the LINE session is provably dead (revoked) or the poll
+  // loop has gone silent past the stall threshold, so the Docker HEALTHCHECK
+  // (which curls this path) actually flips the container to `unhealthy`.
+  // Onboarding states — idle / qr_pending / pin_pending / starting — stay 200:
+  // a container waiting for an operator to scan a QR is doing its job, and
+  // failing it there would restart-loop the very login it is waiting for.
   if (req.method === "GET" && path === "/health") {
-    return json({
-      ok: true,
-      instanceId: config.instanceId,
-      uptimeSec: Math.floor((Date.now() - bootAt) / 1000),
-      login: getLoginStatus().state,
-    });
+    const login = getLoginStatus();
+    const session = getSessionHealth();
+    const ok = session.healthy && login.state !== "expired";
+    return json(
+      {
+        ok,
+        instanceId: config.instanceId,
+        uptimeSec: Math.floor((Date.now() - bootAt) / 1000),
+        login: login.state,
+        connection: session.connection,
+        lastSyncAgoSec: session.silentForMs === null ? null : Math.floor(session.silentForMs / 1000),
+        error: ok ? undefined : (session.lastError ?? login.error),
+      },
+      ok ? 200 : 503,
+    );
   }
 
   // Everything below is login control — gate behind Basic auth.
@@ -89,6 +112,7 @@ async function handle(req: Request, config: WorkerConfig): Promise<Response> {
   // each downstream (session store, forward sink, onix) is actually wired up.
   if (req.method === "GET" && path === "/status") {
     const login = getLoginStatus();
+    const session = getSessionHealth();
     const watched = listWatched();
     return json({
       ok: true,
@@ -98,14 +122,33 @@ async function handle(req: Request, config: WorkerConfig): Promise<Response> {
 
       // 1. Is anyone logged in — and who?
       login: {
-        loggedIn: login.state === "ready",
+        // Both halves must hold: the login succeeded AND LINE is still
+        // answering. `state === "ready"` on its own is what made a revoked
+        // session read as online.
+        loggedIn: login.state === "ready" && session.healthy,
         state: login.state,
         profileName: login.profileName,
         profileMid: login.profileMid,
         awaitingScan: login.state === "qr_pending",
         awaitingPin: login.state === "pin_pending",
+        // Was ready, then LINE revoked it — an operator must log in again.
+        expired: login.state === "expired",
         error: login.error,
         updatedAt: login.updatedAt,
+      },
+
+      // 1b. Is LINE actually still talking to us? Observed by the poll loop —
+      // the only part of the worker that finds out. `connection.state` is the
+      // same string `/health` and `/login/status` report as `connection`.
+      connection: {
+        state: session.connection,
+        healthy: session.healthy,
+        pollLoopRunning: session.pollStartedAt > 0,
+        lastSyncOkAt: session.lastSyncOkAt || undefined,
+        lastSyncAgoSec: session.silentForMs === null ? null : Math.floor(session.silentForMs / 1000),
+        stalledSec: session.stalledMs > 0 ? Math.floor(session.stalledMs / 1000) : 0,
+        consecutiveFailures: session.consecutiveFailures,
+        lastError: session.lastError,
       },
 
       // 2. Which code is deployed.
@@ -150,7 +193,17 @@ async function handle(req: Request, config: WorkerConfig): Promise<Response> {
   }
 
   if (req.method === "GET" && path === "/login/status") {
-    return json({ ok: true, ...getLoginStatus() });
+    const login = getLoginStatus();
+    const session = getSessionHealth();
+    return json({
+      ok: true,
+      ...login,
+      // Same conjunction as /status: whoever polls this to decide "do I need to
+      // show a QR?" must see a revoked session, not the stale login verdict.
+      loggedIn: login.state === "ready" && session.healthy,
+      connection: session.connection,
+      lastSyncAgoSec: session.silentForMs === null ? null : Math.floor(session.silentForMs / 1000),
+    });
   }
 
   if (req.method === "POST" && path === "/login/qr") {

@@ -3440,3 +3440,227 @@ describe("🏦 bank-tx — parseBankTx()", () => {
     expect(knownBank("Krungthai Connext")).toBe("KTB");
   });
 });
+
+// ─── Session Health / Poll Recovery Tests ───────────────────────
+import {
+  __resetSessionHealthForTest,
+  getSessionHealth,
+  isLineAuthError,
+  isLongPollExpiry,
+  markPollOk,
+  notePollFailure,
+  notePollStarted,
+  noteSessionExpired,
+} from "../src/core/session-health.js";
+import {
+  MAX_OP_AGE_MS,
+  REPORT_AFTER_MS,
+  RESTART_AFTER_MS,
+  RESYNC_AFTER_MS,
+  createStallTracker,
+  isStaleOp,
+  opTimestampMs,
+} from "../src/core/poll-recovery.js";
+import {
+  getLoginStatus,
+  markSessionExpired,
+  markSessionRecovered,
+  setLoginStatus,
+} from "../src/core/login-state.js";
+
+describe("🩺 Session health — LINE error classification", () => {
+  test("revoked-device and auth failures are terminal", () => {
+    expect(isLineAuthError("NOT_AUTHORIZED_DEVICE")).toBe(true);
+    expect(isLineAuthError("TalkException: AUTHENTICATION_FAILED (reason=...)")).toBe(true);
+  });
+  test("transient failures are NOT auth errors", () => {
+    expect(isLineAuthError("Request timed out")).toBe(false);
+    expect(isLineAuthError("fetch failed: ECONNRESET")).toBe(false);
+    expect(isLineAuthError('The value of "offset" is out of range')).toBe(false);
+  });
+  test("a 410 long-poll expiry is a keep-alive, not a dead session", () => {
+    expect(isLongPollExpiry("Request internal failed: status=410 body=")).toBe(true);
+    expect(isLongPollExpiry("Request internal failed: status=500")).toBe(false);
+    expect(isLineAuthError("Request internal failed: status=410")).toBe(false);
+  });
+});
+
+describe("🩺 Session health — connection snapshot", () => {
+  beforeEach(() => __resetSessionHealthForTest());
+
+  test("idle before the poll loop starts", () => {
+    expect(getSessionHealth().connection).toBe("idle");
+    expect(getSessionHealth().healthy).toBe(true);
+  });
+
+  test("online after the first successful sync", () => {
+    notePollStarted();
+    markPollOk();
+    const h = getSessionHealth();
+    expect(h.connection).toBe("online");
+    expect(h.healthy).toBe(true);
+    expect(h.consecutiveFailures).toBe(0);
+  });
+
+  test("degraded on a failure, still healthy (one blip must not flip the container)", () => {
+    notePollStarted();
+    markPollOk();
+    notePollFailure("ECONNRESET");
+    const h = getSessionHealth();
+    expect(h.connection).toBe("degraded");
+    expect(h.healthy).toBe(true);
+    expect(h.consecutiveFailures).toBe(1);
+    expect(h.lastError).toBe("ECONNRESET");
+  });
+
+  test("stalled once failures pass the report threshold", () => {
+    notePollStarted();
+    markPollOk();
+    notePollFailure("RangeError: offset out of range");
+    const later = Date.now() + REPORT_AFTER_MS + 1_000;
+    const h = getSessionHealth(later);
+    expect(h.connection).toBe("stalled");
+    expect(h.healthy).toBe(false);
+  });
+
+  test("silence alone is a stall — a sync() that never resolves logs no failure", () => {
+    notePollStarted();
+    markPollOk();
+    const later = Date.now() + REPORT_AFTER_MS + 1_000;
+    const h = getSessionHealth(later);
+    expect(h.consecutiveFailures).toBe(0);
+    expect(h.connection).toBe("stalled");
+    expect(h.healthy).toBe(false);
+  });
+
+  test("expired outranks everything and is not healthy", () => {
+    notePollStarted();
+    markPollOk();
+    noteSessionExpired("NOT_AUTHORIZED_DEVICE");
+    const h = getSessionHealth();
+    expect(h.connection).toBe("expired");
+    expect(h.healthy).toBe(false);
+  });
+
+  test("a successful sync clears expiry and reports the recovery once", () => {
+    notePollStarted();
+    markPollOk();
+    noteSessionExpired("NOT_AUTHORIZED_DEVICE");
+    expect(markPollOk()).toBe(true); // was unhealthy → recovery worth reporting
+    expect(getSessionHealth().connection).toBe("online");
+    expect(markPollOk()).toBe(false); // already healthy → stay quiet
+  });
+});
+
+describe("🔐 Login state — session expiry demotes ready", () => {
+  beforeEach(() => {
+    setLoginStatus({
+      state: "ready",
+      profileName: "Bot",
+      profileMid: "u1",
+      error: undefined,
+      qrUrl: undefined,
+      pincode: undefined,
+    });
+  });
+
+  test("a revoked session moves ready → expired but keeps the profile", () => {
+    markSessionExpired("session revoked");
+    const s = getLoginStatus();
+    expect(s.state).toBe("expired");
+    expect(s.error).toBe("session revoked");
+    expect(s.profileName).toBe("Bot");
+    expect(s.profileMid).toBe("u1");
+  });
+
+  test("recovery promotes expired → ready and clears the error", () => {
+    markSessionExpired("session revoked");
+    markSessionRecovered();
+    const s = getLoginStatus();
+    expect(s.state).toBe("ready");
+    expect(s.error).toBeUndefined();
+  });
+
+  test("a login in flight is never clobbered", () => {
+    setLoginStatus({ state: "qr_pending", qrUrl: "https://line.me/R/au/q/xyz" });
+    markSessionExpired("session revoked");
+    expect(getLoginStatus().state).toBe("qr_pending");
+    expect(getLoginStatus().qrUrl).toBe("https://line.me/R/au/q/xyz");
+  });
+
+  test("recovery is a no-op unless the session was expired", () => {
+    markSessionRecovered();
+    expect(getLoginStatus().state).toBe("ready");
+  });
+});
+
+describe("🪜 Poll recovery — stall ladder", () => {
+  test("each rung fires once, in order", () => {
+    const stall = createStallTracker();
+    const t0 = 1_000_000;
+    expect(stall.noteFailure(t0).escalation).toBe("none");
+    expect(stall.noteFailure(t0 + RESYNC_AFTER_MS).escalation).toBe("resync");
+    // Latched: the loop fails every ~5s, so the same rung must not re-fire
+    expect(stall.noteFailure(t0 + RESYNC_AFTER_MS + 5_000).escalation).toBe("none");
+    expect(stall.noteFailure(t0 + REPORT_AFTER_MS).escalation).toBe("report");
+    expect(stall.noteFailure(t0 + REPORT_AFTER_MS + 5_000).escalation).toBe("none");
+    expect(stall.noteFailure(t0 + RESTART_AFTER_MS).escalation).toBe("restart");
+  });
+
+  test("a long stall jumps straight to the highest rung crossed", () => {
+    const stall = createStallTracker();
+    const t0 = 1_000_000;
+    stall.noteFailure(t0);
+    expect(stall.noteFailure(t0 + RESTART_AFTER_MS + 60_000).escalation).toBe("restart");
+  });
+
+  test("success closes the episode and reports how far it got", () => {
+    const stall = createStallTracker();
+    const t0 = 1_000_000;
+    stall.noteFailure(t0);
+    stall.noteFailure(t0 + REPORT_AFTER_MS);
+    const rec = stall.noteSuccess(t0 + REPORT_AFTER_MS + 1_000);
+    expect(rec.recovered).toBe(true);
+    expect(rec.reached).toBe("report");
+    expect(rec.stalledMs).toBe(REPORT_AFTER_MS + 1_000);
+    // Next episode starts from a clean slate
+    expect(stall.noteSuccess(t0).recovered).toBe(false);
+  });
+
+  test("a success with no prior failure is not a recovery", () => {
+    expect(createStallTracker().noteSuccess(1_000).recovered).toBe(false);
+  });
+});
+
+describe("🪜 Poll recovery — backlog staleness guard", () => {
+  const NOW_MS = 1_800_000_000_000;
+
+  test("reads createdTime as number, bigint, string, and seconds", () => {
+    expect(opTimestampMs({ createdTime: NOW_MS })).toBe(NOW_MS);
+    expect(opTimestampMs({ createdTime: BigInt(NOW_MS) })).toBe(NOW_MS);
+    expect(opTimestampMs({ createdTime: String(NOW_MS) })).toBe(NOW_MS);
+    // Seconds-resolution ops are scaled, not treated as 1970
+    expect(opTimestampMs({ createdTime: 1_800_000_000 })).toBe(NOW_MS);
+    // Nested on the message
+    expect(opTimestampMs({ message: { createdTime: NOW_MS } })).toBe(NOW_MS);
+  });
+
+  test("undatable ops are never stale — unknown shapes keep being delivered", () => {
+    expect(opTimestampMs({ type: "SEND_MESSAGE" })).toBeNull();
+    expect(opTimestampMs(null)).toBeNull();
+    expect(opTimestampMs({ createdTime: "" })).toBeNull();
+    expect(isStaleOp({ type: "SEND_MESSAGE" }, NOW_MS)).toBe(false);
+  });
+
+  test("only ops older than the freshness window are stale", () => {
+    expect(isStaleOp({ createdTime: NOW_MS - 1_000 }, NOW_MS)).toBe(false);
+    expect(isStaleOp({ createdTime: NOW_MS - MAX_OP_AGE_MS }, NOW_MS)).toBe(false);
+    expect(isStaleOp({ createdTime: NOW_MS - MAX_OP_AGE_MS - 1 }, NOW_MS)).toBe(true);
+    // A 6-hour-old command drained on recovery must not be executed
+    expect(isStaleOp({ createdTime: NOW_MS - 6 * 3600_000 }, NOW_MS)).toBe(true);
+  });
+
+  test("clock skew (an op dated in the future) is never stale", () => {
+    expect(isStaleOp({ createdTime: NOW_MS + 60_000 }, NOW_MS)).toBe(false);
+  });
+});

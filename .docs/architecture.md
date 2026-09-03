@@ -83,12 +83,29 @@ external service ก็ตาม)
 
 | Method + Path | Auth | ใช้ทำอะไร |
 |---|---|---|
-| `GET /health` | ไม่ต้อง | liveness + login state |
-| `GET /login/status` | Basic | สถานะ login เต็ม (qrUrl / pincode / profile) |
+| `GET /health` | ไม่ต้อง | liveness + สถานะการเชื่อมต่อ LINE — ตอบ **503** เมื่อ session ตาย/ค้าง |
+| `GET /status` | Basic | ภาพรวม: login, `connection` (session health), build, ปลายทาง, watched |
+| `GET /login/status` | Basic | สถานะ login เต็ม (qrUrl / pincode / profile) + `connection`, `loggedIn` |
 | `POST /login/qr` | Basic | เริ่ม QR login |
 | `POST /login/password` | Basic | เริ่ม email/password login |
 
 รายละเอียดใน [login.md](./login.md) — ปิดได้ด้วย `HTTP_PORT=0`
+
+**`login.state` ไม่ใช่สถานะการเชื่อมต่อ** มันบอกแค่ว่า *ความพยายาม login ครั้งล่าสุด* จบยังไง
+ส่วนคำถามว่า "LINE ยังตอบเราอยู่ไหม" ตอบได้จาก poll loop ที่เดียว
+([../src/core/session-health.ts](../src/core/session-health.ts)) ทุก endpoint จึงรายงานทั้งสองอย่าง
+และ `loggedIn` คือ **ทั้งคู่ต้องจริง** (`state === "ready" && session healthy`)
+
+| `connection` | ความหมาย | `healthy` |
+|---|---|---|
+| `idle` | poll loop ยังไม่เริ่ม (รอสแกน QR / เพิ่งบูต) | ✅ |
+| `online` | sync สำเร็จล่าสุดยังสด | ✅ |
+| `degraded` | ล้มเหลวอยู่ แต่ยังไม่ถึงเกณฑ์ค้าง (3 นาที) | ✅ |
+| `stalled` | ไม่ได้คุยกับ LINE เกิน 3 นาที (รวมกรณี `sync()` ค้างไม่ตอบ) | ❌ |
+| `expired` | LINE ปฏิเสธ session (`NOT_AUTHORIZED_DEVICE` / `AUTHENTICATION_FAILED`) → ต้อง login ใหม่ | ❌ |
+
+`expired` จะปลด `login.state` จาก `ready` เป็น `expired` ด้วย และถ้า LINE กลับมาตอบ ระบบจะเลื่อนกลับเป็น
+`ready` เองโดยไม่ต้องรอคน restart
 
 ## 4. Runtime model ภายใน worker
 
@@ -112,6 +129,13 @@ flowchart TD
 
 - **ไม่ใช้** `client.listen()` (LEGY HTTP/2 push พังบน Bun) — ใช้ **short/long-poll** บน `talk.sync()` แทน
   ([../src/core/poll-loop.ts](../src/core/poll-loop.ts))
+- poll loop คือ **แหล่งความจริงของสถานะการเชื่อมต่อ**: ทุกรอบเขียนผลลง
+  [session-health.ts](../src/core/session-health.ts) (ให้ `/status`, `/health` อ่าน) และปลด
+  `login-state` จาก `ready` เมื่อ LINE ปฏิเสธ session — long-poll timeout กับ `410 Gone`
+  นับเป็น "LINE ยังตอบ" ไม่ใช่ error
+- sync ที่ล้มเหลวจะไต่บันไดกู้ตัวเอง ([poll-recovery.ts](../src/core/poll-recovery.ts)):
+  45 วิ → `resync` (ตั้ง revision ใหม่) · 3 นาที → `report` · 10 นาที → `restart` (จำกัด 2 ครั้ง/รอบ
+  เพื่อกัน login ซ้ำจนโดนแบน); op ที่เก่ากว่า 5 นาทีถูกทิ้ง ไม่ replay backlog เป็น traffic สด
 - ทุก outbound LINE call ผ่าน **shared rate limiter** (proxy บน `client.base.talk`) เพื่อกันแบน; `sync` ถูกยกเว้น
 - E2EE (Letter Sealing) ต้องถอดก่อนอ่านข้อความ — การ login ใหม่ (ไม่ใช่ token restore จาก Redis) จะหมุนกุญแจ
   E2EE (มี warning ใน log/dashboard)
