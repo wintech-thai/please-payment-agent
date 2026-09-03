@@ -17,6 +17,7 @@ import { BaseStorage, MemoryStorage, type Storage } from "@evex/linejs/storage";
 import { logger } from "./logger.js";
 import { reportPincode, reportQr, reportReady, reportStatus } from "./webhook.js";
 import { setLoginStatus } from "./login-state.js";
+import { resetSessionHealth } from "./session-health.js";
 import { isRedisEnabled, getRedis, redisKey } from "./redis-client.js";
 import { initSharedLimiter, gateOutbound } from "./rate-limiter.js";
 import { isGroupCommandEnabled, isFleetMember, reportOwnProfileMid } from "./database.js";
@@ -46,6 +47,25 @@ let loginDeviceOptions: { device: Device; storage: BaseStorage } | null = null;
 /** True while a login attempt is running, so a bootstrap login and an RPC-
  *  triggered login can't run concurrently and fight over the client. */
 let loginInFlight = false;
+/**
+ * The client the active poll loop is bound to — `null` until the worker goes
+ * live (`startListening`).
+ *
+ * A re-login builds a WHOLE NEW `Client`; the old poll loop keeps polling the
+ * old one, whose token LINE has revoked, so it fails every 5s and reports the
+ * session `expired` — over the top of the login that just succeeded. That is
+ * the "scanned the QR again but the status stays expired" bug. This is the
+ * handover baton: whoever `startListening()` last bound wins, and the loser
+ * exits (see `isListeningClient`).
+ */
+let listeningClient: Client | null = null;
+/**
+ * Called when a re-login replaces the live client, so the caller can re-bind
+ * everything that captured the old one. Registered by `index.ts` — the event
+ * router's `client.on("message")` handlers live on the client OBJECT, so
+ * without a re-bind a re-logged-in bot polls fine and still hears nothing.
+ */
+let clientReplacedHandler: ((lineClient: Client) => void) | null = null;
 const PIN_TIMEOUT_POLL_MS = 250;
 const PIN_TIMEOUT_REASON = "pin_timeout";
 const PIN_TIMEOUT_MESSAGE = "PIN wait timed out; restart the bot to request a new PIN";
@@ -61,6 +81,23 @@ export function getClient(): Client {
 
 export function isClientReady(): boolean {
   return client !== null;
+}
+
+/**
+ * Is this the client the poll loop should still be polling? `poll-loop.ts` asks
+ * every round (and before every state write) and returns when the answer turns
+ * false, so exactly one loop is ever live.
+ */
+export function isListeningClient(candidate: Client): boolean {
+  return listeningClient === candidate;
+}
+
+/**
+ * Register the re-login hook (see `clientReplacedHandler`). Called once by the
+ * bootstrap, before it starts listening.
+ */
+export function onClientReplaced(handler: (lineClient: Client) => void): void {
+  clientReplacedHandler = handler;
 }
 
 export function getKnownBotMid(): string {
@@ -818,6 +855,10 @@ function installTalkRateLimit(lineClient: Client): void {
 
 async function onClientReady(lineClient: Client): Promise<void> {
   installTalkRateLimit(lineClient);
+  // Anything observed about the old session belongs to a client that no longer
+  // exists — most of all a recorded `expired`, which would otherwise keep
+  // `/status` red straight through a successful re-login.
+  resetSessionHealth();
   try {
     const profile = await lineClient.base.talk.getProfile();
     const displayName = (profile as { displayName?: string })?.displayName ?? "Unknown";
@@ -842,6 +883,7 @@ async function onClientReady(lineClient: Client): Promise<void> {
     if (botMid) {
       await reportOwnProfileMid(botMid);
     }
+    handOverToNewClient(lineClient);
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     logger.warn("Failed to fetch profile after login", { error: msg });
@@ -854,6 +896,27 @@ async function onClientReady(lineClient: Client): Promise<void> {
       error: undefined,
     });
     await reportReady("Unknown", "Unknown");
+    handOverToNewClient(lineClient);
+  }
+}
+
+/**
+ * A login just produced `lineClient`. If the worker was ALREADY live on a
+ * different client, everything bound to the old object has to move across.
+ *
+ * No-op on the boot path (`listeningClient === null`): the bootstrap starts the
+ * router and the poll loop itself once, and starting a second one here would
+ * double-deliver every message.
+ */
+function handOverToNewClient(lineClient: Client): void {
+  if (listeningClient === null || listeningClient === lineClient) return;
+  logger.warn("Re-login replaced the LINE client — re-binding the event router and poll loop");
+  try {
+    clientReplacedHandler?.(lineClient);
+  } catch (error) {
+    logger.error("Failed to re-bind after a re-login — the bot may not receive messages", {
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 
@@ -896,10 +959,13 @@ export async function resolveDisplayName(mid: string): Promise<string> {
  */
 export async function startListening(): Promise<void> {
   const lineClient = getClient();
+  // Claim the baton BEFORE the first await: any loop still running on an older
+  // client sees `isListeningClient` go false and retires on its next check.
+  listeningClient = lineClient;
   const { runPollLoop } = await import("./poll-loop.js");
 
   logger.info("Starting LINE event listener (short-poll mode)");
-  await runPollLoop(lineClient);
+  await runPollLoop(lineClient, () => isListeningClient(lineClient));
 }
 
 /**
@@ -1199,5 +1265,8 @@ export function disconnectClient(): void {
   if (client) {
     logger.info("Disconnecting LINE client");
     client = null;
+    // Retires the poll loop on the next round instead of leaving it polling a
+    // client nobody owns any more.
+    listeningClient = null;
   }
 }

@@ -43,6 +43,10 @@ email/password (env เท่านั้น) → QR **ยกเว้น** ก�
   [architecture.md](./architecture.md) §3 ตาราง `connection`) ให้ใช้ `loggedIn` ซึ่งเป็น
   `state === "ready" && session healthy` เป็นตัวตัดสินว่าต้องขึ้น QR ให้ผู้ใช้สแกนใหม่หรือยัง
 - ถ้า LINE กลับมาตอบเองโดยไม่ต้อง login ใหม่ `expired` จะเลื่อนกลับเป็น `ready` อัตโนมัติ
+- **login ใหม่ตอน worker รันอยู่** (ยิง `POST /login/qr` หลัง session หลุด) จะสร้าง `Client` ตัวใหม่ทั้งอัน
+  worker จึงย้ายทุกอย่างที่ผูกกับตัวเก่ามาให้เอง: event router (`client.on(...)` ผูกกับ *object*)
+  และ poll loop — loop เก่าจะออกทันทีที่ตัวใหม่รับช่วง ไม่งั้นมันจะ poll ด้วย token ที่ถูกเพิกถอน
+  แล้วเขียน `expired` ทับ login ที่เพิ่งสำเร็จ (อาการ "สแกน QR ใหม่แล้วแต่ status ค้างเป็น expired")
 
 ตัวอย่าง:
 ```bash

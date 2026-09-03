@@ -3664,3 +3664,102 @@ describe("🪜 Poll recovery — backlog staleness guard", () => {
     expect(isStaleOp({ createdTime: NOW_MS + 60_000 }, NOW_MS)).toBe(false);
   });
 });
+
+// ─── Re-login handover Tests ────────────────────────────────────
+import { runPollLoop } from "../src/core/poll-loop.js";
+import { resetSessionHealth } from "../src/core/session-health.js";
+
+/** Minimal stand-in for a linejs Client: only what runPollLoop touches. */
+function fakeClient(sync: () => Promise<unknown>) {
+  return {
+    base: { talk: { sync }, e2ee: {}, profile: { mid: "u1" } },
+    emit: () => {},
+  } as unknown as Parameters<typeof runPollLoop>[0];
+}
+
+describe("♻️ Re-login — a replaced client must not clobber the new session", () => {
+  beforeEach(() => {
+    resetSessionHealth();
+    notePollStarted();
+    markPollOk();
+    setLoginStatus({
+      state: "ready",
+      profileName: "Bot",
+      profileMid: "u1",
+      error: undefined,
+      qrUrl: undefined,
+      pincode: undefined,
+    });
+  });
+
+  test("a loop whose client was already replaced retires before it polls", async () => {
+    let syncCalls = 0;
+    const client = fakeClient(async () => {
+      syncCalls++;
+      throw new Error("TalkException: NOT_AUTHORIZED_DEVICE");
+    });
+
+    await runPollLoop(client, () => false);
+
+    expect(syncCalls).toBe(0);
+    expect(getLoginStatus().state).toBe("ready");
+    expect(getSessionHealth().connection).toBe("online");
+  });
+
+  test("a loop replaced MID-POLL reports nothing — the QR-rescan-stays-expired bug", async () => {
+    // The real sequence: the old loop is parked in talk.sync() when the operator
+    // finishes a QR re-login. It wakes up, fails on the revoked token, and used
+    // to write `expired` straight over the login that had just succeeded.
+    let current = true;
+    let syncCalls = 0;
+    const client = fakeClient(async () => {
+      syncCalls++;
+      current = false; // a fresh login claimed the baton while we were polling
+      throw new Error("TalkException: NOT_AUTHORIZED_DEVICE");
+    });
+
+    await runPollLoop(client, () => current);
+
+    expect(syncCalls).toBe(1);
+    expect(getLoginStatus().state).toBe("ready"); // NOT demoted to "expired"
+    expect(getSessionHealth().connection).not.toBe("expired");
+    expect(getSessionHealth().healthy).toBe(true);
+    expect(getSessionHealth().consecutiveFailures).toBe(0);
+    expect(getSessionHealth().lastError).toBeUndefined();
+  });
+
+  test("a still-current loop keeps reporting — the guard must not silence a live bot", async () => {
+    let syncCalls = 0;
+    const client = fakeClient(async () => {
+      syncCalls++;
+      throw new Error("TalkException: NOT_AUTHORIZED_DEVICE");
+    });
+
+    // Not awaited: after recording the failure the loop sits in its 5s error
+    // backoff, and we only care about what it wrote. Flipping `current` at the
+    // end lets it retire on its next round instead of leaking.
+    let current = true;
+    void runPollLoop(client, () => current).catch(() => {});
+    await new Promise((r) => setTimeout(r, 60));
+
+    expect(syncCalls).toBe(1);
+    expect(getLoginStatus().state).toBe("expired");
+    expect(getSessionHealth().connection).toBe("expired");
+    current = false;
+  });
+
+  test("a fresh login wipes everything observed about the dead session", () => {
+    noteSessionExpired("NOT_AUTHORIZED_DEVICE");
+    markSessionExpired("LINE session หมดอายุ");
+    expect(getSessionHealth().connection).toBe("expired");
+
+    // What onClientReady() does when a login hands it a brand new client.
+    resetSessionHealth();
+    setLoginStatus({ state: "ready", error: undefined });
+
+    expect(getSessionHealth().connection).toBe("idle");
+    expect(getSessionHealth().healthy).toBe(true);
+    expect(getSessionHealth().lastError).toBeUndefined();
+    expect(getLoginStatus().state).toBe("ready");
+  });
+});

@@ -133,6 +133,9 @@ flowchart TD
   [session-health.ts](../src/core/session-health.ts) (ให้ `/status`, `/health` อ่าน) และปลด
   `login-state` จาก `ready` เมื่อ LINE ปฏิเสธ session — long-poll timeout กับ `410 Gone`
   นับเป็น "LINE ยังตอบ" ไม่ใช่ error
+- **หนึ่ง loop ต่อหนึ่ง client**: login ใหม่สร้าง `Client` ตัวใหม่ `startListening()` จะรับช่วง
+  "listening baton" แล้ว loop เก่าจะออกในรอบถัดไปโดยไม่แตะสถานะอีก และ `index.ts` ผูก event router
+  เข้ากับ client ตัวใหม่ผ่าน hook `onClientReplaced()` (listener ผูกกับ object ไม่ใช่ module)
 - sync ที่ล้มเหลวจะไต่บันไดกู้ตัวเอง ([poll-recovery.ts](../src/core/poll-recovery.ts)):
   45 วิ → `resync` (ตั้ง revision ใหม่) · 3 นาที → `report` · 10 นาที → `restart` (จำกัด 2 ครั้ง/รอบ
   เพื่อกัน login ซ้ำจนโดนแบน); op ที่เก่ากว่า 5 นาทีถูกทิ้ง ไม่ replay backlog เป็น traffic สด

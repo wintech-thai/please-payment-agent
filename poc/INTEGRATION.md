@@ -115,6 +115,8 @@ docker compose up --build -d
 
 - `expired` จะปลด `login.state` จาก `ready` เป็น `expired` ด้วย และถ้า LINE กลับมาตอบเองจะเลื่อนกลับเป็น
   `ready` อัตโนมัติ — ปลายทางไม่ต้องมี logic รีเซ็ตเอง
+- **หลังสแกน QR ใหม่สำเร็จ status จะกลับเป็น `ready` / `online` ทันที** ไม่ต้อง restart container
+  (worker ล้างสถานะของ session เก่าทิ้งและย้าย poll loop + event router มาที่ client ตัวใหม่ให้เอง)
 - `/health` เป็น endpoint เดียวที่เปลี่ยน **status code** (200 ↔ 503) — Docker HEALTHCHECK ใช้ตัวนี้
   ส่วน `/status` กับ `/login/status` ยังตอบ 200 เสมอ ให้ดูที่ `loggedIn` / `connection` ในตัว body
 - **ไม่มี field เดิมถูกลบหรือเปลี่ยนความหมาย** — ของเก่าที่อ่าน `state`, `qrUrl`, `pincode`, `profileName`
