@@ -273,6 +273,13 @@ export interface OnixConfig {
   appType: string;
   /** Per-request timeout for onix POSTs (ms). */
   timeoutMs: number;
+  /**
+   * Value of the `X-Forward-Mutual-Key` header, from env var MUTUAL_KEY —
+   * same shared secret admin/merchant's proxy relay sends, proves this call
+   * is genuinely from a trusted backend so onix's blacklist middleware can
+   * skip its IP check. Omitted (no header sent) when unset.
+   */
+  mutualKey?: string;
 }
 
 /**
