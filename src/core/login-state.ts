@@ -5,7 +5,11 @@
  * (src/core/http-server.ts) can report progress to whoever triggered a login,
  * and so the bootstrap can block until login is ready (`waitForLoginReady`).
  *
- * `line-client.ts` is the sole writer; `http-server.ts` and `index.ts` read.
+ * `line-client.ts` owns the login flow itself; `poll-loop.ts` owns what happens
+ * to that verdict afterwards (`markSessionExpired` / `markSessionRecovered`) —
+ * a state that only ever moved forward to "ready" was the whole reason a bot
+ * whose LINE session had been revoked kept reporting itself as ready.
+ * `http-server.ts` and `index.ts` read.
  * Only `logger` is imported (it pulls in nothing but types), so this module
  * stays free of dependency cycles.
  */
@@ -18,6 +22,7 @@ export type LoginState =
   | "qr_pending" // a QR URL is available to scan
   | "pin_pending" // a 2FA PIN must be entered in the LINE app
   | "ready" // logged in and online
+  | "expired" // was ready, but LINE has since revoked/expired the session
   | "error"; // last attempt failed (see `error`)
 
 export interface LoginStatus {
@@ -90,6 +95,31 @@ export function setLoginStatus(partial: Partial<Omit<LoginStatus, "updatedAt">>)
       }
     }
   }
+}
+
+/**
+ * LINE rejected the live session (see `session-health.ts`). Demotes a **ready**
+ * login to "expired" so `/login/status` and `/status` stop claiming the bot is
+ * connected; the profile is kept because it is still who was logged in.
+ *
+ * Only "ready" is demoted on purpose: a login attempt already in flight
+ * (qr_pending / pin_pending / starting) owns the status, and overwriting it
+ * would wipe a QR the operator is mid-scan of.
+ */
+export function markSessionExpired(error: string): void {
+  if (status.state !== "ready") return;
+  setLoginStatus({ state: "expired", error });
+}
+
+/**
+ * LINE started answering again without a re-login (a revoked-looking failure
+ * that turned out to be transient). Promotes "expired" back to "ready" — the
+ * counterpart to `markSessionExpired`, so a session that healed itself stops
+ * showing as expired without an operator restarting the container.
+ */
+export function markSessionRecovered(): void {
+  if (status.state !== "expired") return;
+  setLoginStatus({ state: "ready", error: undefined });
 }
 
 /**

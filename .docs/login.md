@@ -27,8 +27,9 @@ email/password (env เท่านั้น) → QR **ยกเว้น** ก�
 
 | Method + Path | Auth | Body | ผลลัพธ์ |
 |---|---|---|---|
-| `GET /health` | ไม่ต้อง | — | `{ ok, instanceId, uptimeSec, login: <state> }` |
-| `GET /login/status` | Basic | — | `{ ok, state, qrUrl?, pincode?, profileName?, profileMid?, error?, updatedAt }` |
+| `GET /health` | ไม่ต้อง | — | `{ ok, instanceId, uptimeSec, login: <state>, connection, lastSyncAgoSec }` — **503** เมื่อ `ok:false` |
+| `GET /status` | Basic | — | ภาพรวมเต็ม: `login` (มี `loggedIn`, `expired`), `connection`, build, ปลายทาง, watched |
+| `GET /login/status` | Basic | — | `{ ok, state, loggedIn, connection, lastSyncAgoSec, qrUrl?, pincode?, profileName?, profileMid?, error?, updatedAt }` |
 | `POST /login/qr` | Basic | — | เริ่ม QR login (พื้นหลัง), รอ QR URL สูงสุด ~12s → `202 { ok, state, qrUrl? }` |
 | `POST /login/password` | Basic | `{ email, password }` | เริ่ม email/password login → `202 { ok, state }` |
 
@@ -37,11 +38,18 @@ email/password (env เท่านั้น) → QR **ยกเว้น** ก�
 - **flow ทั่วไป**: `POST /login/qr` → เอา `qrUrl` ไปแสดงให้ผู้ใช้สแกน → poll `GET /login/status` จนเจอ
   `pincode` (กรอกในแอป LINE) → จน `state:"ready"`
 - login state: `idle → starting → qr_pending / pin_pending → ready` (หรือ `error`)
+- **`state:"ready"` อย่างเดียวเชื่อไม่ได้ว่ายังออนไลน์** — มันบอกแค่ว่า login ครั้งล่าสุดสำเร็จ ถ้า LINE
+  เพิกถอน session ทีหลัง poll loop จะปลดเป็น `state:"expired"` และ `connection:"expired"` (ดู
+  [architecture.md](./architecture.md) §3 ตาราง `connection`) ให้ใช้ `loggedIn` ซึ่งเป็น
+  `state === "ready" && session healthy` เป็นตัวตัดสินว่าต้องขึ้น QR ให้ผู้ใช้สแกนใหม่หรือยัง
+- ถ้า LINE กลับมาตอบเองโดยไม่ต้อง login ใหม่ `expired` จะเลื่อนกลับเป็น `ready` อัตโนมัติ
 
 ตัวอย่าง:
 ```bash
 curl -u api:$HTTP_API_KEY -X POST http://bot:3000/login/qr
 curl -u api:$HTTP_API_KEY http://bot:3000/login/status
+curl -u api:$HTTP_API_KEY http://bot:3000/status   # login + connection health ครบชุด
+curl -fsS http://bot:3000/health                   # exit != 0 เมื่อ session ตาย/ค้าง
 curl -u api:$HTTP_API_KEY -X POST http://bot:3000/login/password \
   -H 'Content-Type: application/json' -d '{"email":"a@b.com","password":"secret"}'
 ```

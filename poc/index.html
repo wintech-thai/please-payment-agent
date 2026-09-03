@@ -24,6 +24,7 @@
     .state { font-weight:600; }
     .badge { display:inline-block; padding:2px 9px; border-radius:20px; font-size:12px; background:#2a3040; }
     .badge.ready { background:#0c3; color:#052b05; } .badge.error { background:#e5484d; color:#fff; }
+    .badge.warn { background:#f5a524; color:#2a1a00; }
     .pin { font-size:26px; letter-spacing:.15em; font-weight:700; color:var(--acc); }
     img.qr { width:220px; height:220px; background:#fff; border-radius:10px; padding:8px; display:block; margin:12px 0; }
     .mut { color:var(--mut); font-size:13px; }
@@ -65,6 +66,7 @@
       <h2>สถานะ Login</h2>
       <div class="row">
         <span>state:</span> <span id="lstate" class="badge">—</span>
+        <span>connection:</span> <span id="lconn" class="badge">—</span>
         <span id="lprofile" class="mut"></span>
       </div>
       <div id="lpin"></div>
@@ -90,11 +92,17 @@
     const j = (r) => r.json();
 
     // --- health ---
+    // /health ตอบ 503 + ok:false เมื่อ LINE session ตาย/ค้าง (connection = expired|stalled)
+    // ซึ่งคนละเรื่องกับ "ต่อ worker ไม่ติด" — แยกสองอย่างนี้ให้เห็น ไม่งั้นหน้าจอจะโกหก
+    // ว่า worker ล่มทั้งที่มันตอบอยู่ แค่คุยกับ LINE ไม่ได้
     async function health() {
       try {
         const h = await fetch("/api/health").then(j);
         $("hdot").className = "dot " + (h.ok ? "ok" : "err");
-        $("health").textContent = h.ok ? `instance ${h.instanceId} · login ${h.login}` : "worker unreachable";
+        const ago = h.lastSyncAgoSec == null ? "" : ` · LINE ตอบล่าสุด ${h.lastSyncAgoSec}s ที่แล้ว`;
+        $("health").textContent = h.ok
+          ? `instance ${h.instanceId} · login ${h.login} · ${h.connection}${ago}`
+          : `⚠ ${h.connection === "expired" ? "LINE session หลุด — ต้อง login ใหม่" : "บอทไม่ได้รับข้อความจาก LINE"}${ago}`;
       } catch { $("hdot").className = "dot err"; $("health").textContent = "worker unreachable"; }
     }
 
@@ -119,7 +127,12 @@
       try { s = await fetch("/api/login/status").then(j); } catch { return; }
       const b = $("lstate");
       b.textContent = s.state ?? "—";
-      b.className = "badge" + (s.state === "ready" ? " ready" : s.state === "error" ? " error" : "");
+      b.className = "badge" + (s.loggedIn ? " ready" : (s.state === "error" || s.state === "expired") ? " error" : "");
+      const c = $("lconn");
+      c.textContent = s.connection ?? "—";
+      c.className = "badge" + (s.connection === "online" ? " ready"
+        : s.connection === "expired" ? " error"
+        : (s.connection === "stalled" || s.connection === "degraded") ? " warn" : "");
       $("lprofile").textContent = s.profileName ? `· ${s.profileName}` : "";
       $("lerr").textContent = s.error ? "error: " + s.error : "";
       $("lpin").innerHTML = s.pincode ? `กรอก PIN นี้ในแอป LINE: <span class="pin">${s.pincode}</span>` : "";
@@ -129,8 +142,16 @@
           box.dataset.src = s.qrDataUrl;
           box.innerHTML = `<img class="qr" src="${s.qrDataUrl}" alt="QR"/><div class="mut">สแกนด้วยแอป LINE</div>`;
         }
-      } else if (s.state === "ready") {
+      } else if (s.state === "expired") {
+        // session ถูกเพิกถอน — ต้องขึ้น QR ใหม่ ห้ามค้าง "พร้อมใช้งาน" ไว้เฉยๆ
+        box.dataset.src = "";
+        box.innerHTML = `<div class="mut" style="color:#e5484d">✕ LINE session หลุด — กด "เริ่ม QR login" เพื่อเข้าสู่ระบบใหม่</div>`;
+      } else if (s.loggedIn) {
         box.dataset.src = ""; box.innerHTML = `<div class="mut">✓ พร้อมใช้งาน</div>`;
+      } else if (s.state === "ready") {
+        // login สำเร็จแต่ LINE ยังไม่ตอบ (stalled) — ยังไม่ต้อง login ใหม่ กำลังกู้อัตโนมัติ
+        box.dataset.src = "";
+        box.innerHTML = `<div class="mut" style="color:#f5a524">⏳ ยังไม่ได้รับข้อความจาก LINE (${s.connection}) — กำลังกู้อัตโนมัติ</div>`;
       }
     }
 

@@ -136,13 +136,21 @@ directly — no central controller needed:
 
 ```bash
 curl -u api:$HTTP_API_KEY -X POST http://localhost:3000/login/qr        # → { qrUrl }
-curl -u api:$HTTP_API_KEY http://localhost:3000/login/status            # poll for pincode / ready
+curl -u api:$HTTP_API_KEY http://localhost:3000/login/status            # poll for pincode / loggedIn
 curl -u api:$HTTP_API_KEY -X POST http://localhost:3000/login/password \
   -H 'Content-Type: application/json' -d '{"email":"...","password":"..."}'
+curl -fsS http://localhost:3000/health                                  # 503 when the LINE session is dead
 ```
 
 With `HTTP_PORT` enabled and no token/credentials, the worker waits for one of these calls instead
 of auto-starting QR at boot. Full flow: [.docs/login.md](.docs/login.md).
+
+**Callers: check `loggedIn`, not `state === "ready"`.** `state` only records how the last login
+*attempt* ended; whether LINE still answers is reported separately as `connection`
+(`idle | online | degraded | stalled | expired`), observed by the poll loop
+([src/core/session-health.ts](src/core/session-health.ts)). A revoked session moves `state` to
+`expired`, flips `/health` to 503, and moves back to `ready` on its own if LINE starts answering
+again. Response samples for every state: [poc/INTEGRATION.md](poc/INTEGRATION.md) §1.5.
 
 ### Forwarding to onix
 
