@@ -120,11 +120,14 @@ export async function notifyLineMessage(input: OnixNotifyInput): Promise<OnixRes
   });
 
   const url = resolveEndpoint(cfg);
-  const headers = {
+  const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "Onix-Application-Type": cfg.appType,
     Authorization: buildBasicAuth(cfg),
   };
+  if (cfg.mutualKey) {
+    headers["X-Forward-Mutual-Key"] = cfg.mutualKey;
+  }
   // org/agent/user identify WHICH onix target and identity was used — the fields
   // you compare against onix's side when a notify is rejected.
   const trace = { title: input.title, org: cfg.org, agentId: cfg.agentId, apiUser: cfg.apiUser };

@@ -100,6 +100,7 @@ export function loadConfig(): WorkerConfig {
     apiKey: onixApiKey ?? "",
     appType: optionalEnv("ONIX_APPLICATION_TYPE", "backend"),
     timeoutMs: optionalInt("ONIX_FORWARD_TIMEOUT_MS", 5000),
+    mutualKey: optionalTrimmedEnv("MUTUAL_KEY"),
   };
 
   // Bank OAs to follow + watch by @handle. Defaults to OFF: findContactByUserid

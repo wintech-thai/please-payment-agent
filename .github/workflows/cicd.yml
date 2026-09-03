@@ -28,7 +28,7 @@ jobs:
     - name: Prepare
       id: prep
       run: |
-        DOCKER_IMAGE=${{matrix.service}}
+        DOCKER_IMAGE=${{ secrets.DOCKERHUB_USERNAME }}/${{matrix.service}}
         GCR_IMAGE=asia-southeast1-docker.pkg.dev/its-artifact-commons/please-payment/${{matrix.service}}
         VERSION=latest
         GIT_HASH=$(git rev-parse --short "$GITHUB_SHA")
@@ -97,6 +97,12 @@ jobs:
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v1
 
+    - name: Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
     - name: GCR Authen
       run: |
         # Set up docker to authenticate
@@ -109,7 +115,7 @@ jobs:
         file: ${{ steps.prep.outputs.dockerFile }}
         push: true
         load: false
-        tags: ${{ steps.prep.outputs.gcr_tags }}
+        tags: ${{ steps.prep.outputs.gcr_tags }},${{ steps.prep.outputs.tags }}
         # GIT_* stamp the image so GET /status reports the deployed commit/branch
         # instead of "unknown" — without these a running pod cannot be matched
         # back to its source.
