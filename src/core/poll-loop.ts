@@ -26,6 +26,12 @@
  *   - `session-health.ts` → `/status`, `/health` (สถานะการเชื่อมต่อที่สังเกตได้จริง)
  *   - `login-state.ts`    → ปลด `ready` เป็น `expired` เมื่อ LINE ปฏิเสธ session
  *
+ * **หนึ่ง loop ต่อหนึ่ง client**: login ใหม่ (สแกน QR ซ้ำ) สร้าง `Client` ตัวใหม่ทั้งอัน
+ * loop เก่ายังวนอยู่กับ client ที่ token ถูกเพิกถอนแล้ว มันจึงพังทุกรอบและเขียนทับสถานะ
+ * ของ session ใหม่ให้กลับไปเป็น `expired` — อาการ "สแกน QR เข้าใหม่ได้แล้วแต่ status
+ * ค้างเป็น expired" `isCurrent()` คือทางออกของ loop เก่า: พอ `startListening()` ผูก
+ * client ตัวใหม่ loop เก่าจะออกในรอบถัดไปโดยไม่แตะสถานะอะไรอีกเลย
+ *
  * กันบอทหูหนวก — ดู `core/poll-recovery.ts`:
  *   - sync ที่ค้าง (retry revision เดิมได้ response พังเดิม) จะไต่บันได
  *     resync → report → restart แทนที่จะ backoff เงียบ ๆ ตลอดกาล
@@ -87,9 +93,14 @@ export function isE2EEDecryptKeyMismatch(message: string): boolean {
 
 /**
  * Run the polling loop forever. Auto-reconnects on errors.
- * Does NOT return — call inside a fire-and-forget context.
+ * Returns only when `isCurrent()` says this client has been replaced by a newer
+ * login (or the client was disconnected) — otherwise it does NOT return, so
+ * call it inside a fire-and-forget context.
  */
-export async function runPollLoop(client: Client): Promise<void> {
+export async function runPollLoop(
+  client: Client,
+  isCurrent: () => boolean = () => true,
+): Promise<void> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const talk = (client.base as any).talk;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -114,6 +125,14 @@ export async function runPollLoop(client: Client): Promise<void> {
   // "นานแค่ไหนแล้วตั้งแต่ sync สำเร็จครั้งล่าสุด" — สิ่งเดียวที่แยก poll ที่ค้างออกจาก
   // poll ที่แค่ยุ่ง เพราะ decode error ที่ทำให้ค้างไม่มี status หรือ code ให้จำแนก
   const stall = createStallTracker();
+
+  // Bail before touching shared state: a loop can be obsolete before it ever
+  // polls (a login that lands between `startListening` and here), and
+  // `notePollStarted` would reset the health the winning loop just published.
+  if (!isCurrent()) {
+    logger.info("Poll loop not starting — a newer login already replaced this client");
+    return;
+  }
 
   notePollStarted();
   let lastConnection: SessionConnection = getSessionHealth().connection;
@@ -174,7 +193,22 @@ export async function runPollLoop(client: Client): Promise<void> {
     rawOpLog: isRawOpLogEnabled(),
   });
 
+  /**
+   * client ตัวนี้ถูกแทนที่ไปแล้วหรือยัง? ต้องเช็กก่อน **ทุกครั้งที่จะเขียนสถานะหรือ emit**
+   * ไม่ใช่แค่ตอนต้นรอบ: loop ค้างอยู่ใน `await talk.sync()` ได้ถึง 20 วินาที การ login
+   * ใหม่จึงเกิดขึ้นกลางรอบได้เสมอ
+   */
+  const retired = (): boolean => {
+    if (isCurrent()) return false;
+    logger.info("Poll loop stopping — this client was replaced by a newer login", {
+      lastConnection,
+    });
+    return true;
+  };
+
   while (true) {
+    if (retired()) return;
+
     // Did this round return work? If so we re-poll immediately to drain the
     // backlog like a desktop client catching up; if idle, a short human gap.
     let hadOps = false;
@@ -199,6 +233,9 @@ export async function runPollLoop(client: Client): Promise<void> {
         individualRev = res.operationResponse.individualEvents.lastRevision;
       }
 
+      // ก่อนแตะสถานะหรือ emit อะไร: รอบนี้เริ่มก่อน login ใหม่ ผลลัพธ์ของมันจึงเป็น
+      // ของ session เก่า การปล่อยผ่านคือการเขียนทับสถานะของ session ใหม่
+      if (retired()) return;
       sessionOk();
 
       const ops = res?.operationResponse?.operations ?? [];
@@ -285,6 +322,9 @@ export async function runPollLoop(client: Client): Promise<void> {
       firstPoll = false;
     } catch (err) {
       const m = err instanceof Error ? err.message : String(err);
+      // client ที่ถูกแทนที่แล้วจะพังทุกรอบ (token โดนเพิกถอน) — ออกเงียบ ๆ ก่อนจะไป
+      // รายงาน `expired` ทับ session ใหม่ที่เพิ่ง login สำเร็จ
+      if (retired()) return;
       // long-poll timeout เป็นเรื่องปกติ (server ค้าง connection จน timeout)
       // legy ตอบ 410 Gone เมื่อ long-poll หมดอายุฝั่ง server — ความหมายเดียวกับ
       // timeout ไม่ใช่ session ตาย: ต้องนับว่า session ยังดีแล้ว re-poll ต่อทันที

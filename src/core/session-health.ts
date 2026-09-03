@@ -175,8 +175,15 @@ export function getSessionHealth(now: number = Date.now()): SessionHealth {
   };
 }
 
-/** Test seam: ล้างสถานะกลับไปเหมือน process เพิ่งบูต */
-export function __resetSessionHealthForTest(): void {
+/**
+ * ลืมทุกอย่างที่สังเกตได้จาก client ตัวเก่า
+ *
+ * เรียกเมื่อ **login ใหม่สร้าง client ตัวใหม่มาแทน** (`onClientReady` ใน line-client.ts):
+ * ความล้มเหลวและสถานะ `expired` ที่บันทึกไว้เป็นเรื่องของ session เก่าที่ตายไปแล้ว
+ * ถ้าไม่ล้าง สแกน QR ใหม่สำเร็จแล้ว `/status` จะยังค้างเป็น expired อยู่ดี
+ * (เทสต์ใช้ตัวเดียวกันนี้รีเซ็ตสถานะ)
+ */
+export function resetSessionHealth(): void {
   pollStartedAt = 0;
   lastSyncOkAt = 0;
   firstFailureAt = 0;
@@ -202,3 +209,6 @@ export function logConnectionChange(from: SessionConnection, to: SessionConnecti
     logger.info("LINE session connection changed", record);
   }
 }
+
+/** Test seam alias — same reset, named for its use in specs. */
+export const __resetSessionHealthForTest = resetSessionHealth;

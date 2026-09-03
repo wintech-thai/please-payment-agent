@@ -31,6 +31,7 @@ import {
   getBotMid,
   startQrLogin,
   startPasswordLogin,
+  onClientReplaced,
 } from "./core/line-client.js";
 import {
   registerFeature,
@@ -791,14 +792,34 @@ async function main(): Promise<void> {
   // ── Step 10: Start Listening ──
   logger.info("Starting event listener...");
 
-  // Start the LINE event listener (messages + operations)
-  startListening().catch((error) => {
-    const msg = error instanceof Error ? error.message : String(error);
-    logger.error("Event listener fatal error", { error: msg });
-    if (!isShuttingDown) {
-      reportError("Event listener crashed: " + msg).catch(() => {});
-    }
+  const beginListening = () => {
+    // Start the LINE event listener (messages + operations)
+    startListening().catch((error) => {
+      const msg = error instanceof Error ? error.message : String(error);
+      logger.error("Event listener fatal error", { error: msg });
+      if (!isShuttingDown) {
+        reportError("Event listener crashed: " + msg).catch(() => {});
+      }
+    });
+  };
+
+  // A re-login while the worker is already running (POST /login/qr after the
+  // LINE session was revoked) builds a BRAND NEW linejs Client. Two things are
+  // bound to the old object and have to move across, or the operator sees a
+  // successful QR scan that changes nothing:
+  //   - the event router's `client.on("message"/"event")` handlers — listeners
+  //     live on the client object, so the new one emits into the void
+  //   - the poll loop — the old one keeps polling the revoked session, fails
+  //     every 5s, and reports `expired` over the login that just succeeded
+  // `initEventRouter` reads the current client via `getClient()`, which the
+  // login already swapped, and `startListening` retires the old loop by
+  // claiming the listening baton.
+  onClientReplaced(() => {
+    initEventRouter(config);
+    beginListening();
   });
+
+  beginListening();
 
   logger.info("═══════════════════════════════════════════════");
   logger.info("  rlbotline Worker is LIVE 🚀");
