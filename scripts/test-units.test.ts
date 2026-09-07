@@ -3401,6 +3401,39 @@ describe("🏦 bank-tx — parseBankTx()", () => {
     expect(tx.destinationBank).toBe("KBANK"); // ฝั่งเรา = ตัว OA เอง
   });
 
+  test("KBank money-in parses — unsigned amount + fully masked account", () => {
+    const tx = parseBankTx("KBank LIVE", fixture("kbank_in.txt"), NOW)!;
+    expect(tx.eventType).toBe("tx_in");
+    expect(tx.amount).toBe(15); // "15.00 บาท" ไม่มีเครื่องหมาย — อ่านจาก label "จำนวนเงิน"
+    expect(tx.balance).toBe(8751.94);
+    expect(tx.bank).toBe("KBANK");
+    expect(tx.account).toBe("xxx-x-x0133-x"); // มาส์กทั้งเลข ห้ามตัดเป็นชื่อ+เลข
+    expect(tx.destinationAccount).toBe("xxx-x-x0133-x");
+    expect(tx.destinationAccountName).toBeUndefined();
+    expect(tx.destinationBank).toBe("KBANK");
+    expect(tx.sourceBank).toBe("unknown"); // ใบเงินเข้าของ KBank ไม่บอกต้นทาง
+    expect(tx.txDate).toBe("7 ก.ย. 69 14:13 น."); // ไม่มี label — อยู่ใต้หัวข้อทิศทาง
+    expect(shouldForwardOaMessage("KBank LIVE", tx, ["tx_in"])).toBe(true);
+    expect(shouldForwardOaMessage("KBank LIVE", tx, ["tx_out"])).toBe(false);
+  });
+
+  test("KBank money-out: header decides direction even with an unsigned amount", () => {
+    const nodes = ["รายการเงินออก", "7 ก.ย. 69 14:13  น.", "จากบัญชี", "xxx-x-x0133-x", "จำนวนเงิน", "15.00  บาท"]
+      .map((text) => ({ type: "text", text }));
+    const tx = parseBankTx("KBank LIVE", JSON.stringify({ contents: nodes }), NOW)!;
+    expect(tx.eventType).toBe("tx_out");
+    expect(tx.amount).toBe(15);
+    expect(tx.account).toBe("xxx-x-x0133-x");
+    expect(tx.sourceBank).toBe("KBANK");
+  });
+
+  test("an unsigned 'จำนวนเงิน' row without a direction header is still not a tx", () => {
+    const nodes = ["โปรโมชัน", "จำนวนเงิน", "15.00 บาท"].map((text) => ({ type: "text", text }));
+    expect(parseBankTx("KBank LIVE", JSON.stringify({ contents: nodes }), NOW)).toBeNull();
+    // KBank ยังไม่มีตัวอย่างใบโปรฯ → FILTER_EVENT ต้อง fail open ต่อ
+    expect(knownBank("KBank LIVE")).toBeNull();
+  });
+
   test("promo flex messages are rejected", () => {
     expect(parseBankTx("SCB Connect", fixture("scb_promo_activate.txt"), NOW)).toBeNull();
     expect(parseBankTx("SCB Connect", fixture("scb_promo_intro.txt"), NOW)).toBeNull();
