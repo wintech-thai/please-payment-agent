@@ -11,6 +11,9 @@
  * Connext templates (captured in `.req/`): a value text-node always directly
  * follows its label text-node in document order.
  *
+ * KBank LIVE keeps the direction header but prints the amount unsigned, under
+ * a "จำนวนเงิน" label — the generic reader falls back to that row.
+ *
  * GSB Now shares that label/value shape but has neither a direction header nor
  * a signed amount, so it gets its own reader (`parseGsbTx`).
  */
@@ -99,6 +102,9 @@ function stripBankTokens(s: string): string {
     .trim();
 }
 
+/** KBank masks the whole account, dashes included: "xxx-x-x0133-x". */
+const MASKED_ACCOUNT = /^[\dXx]+(?:-[\dXx]+){2,}$/;
+
 /**
  * Split an account string into number + holder name after stripping bank
  * tokens: "SUEBPONG MONS X-3090\nกรุงไทย" → { account: "X-3090", name:
@@ -106,6 +112,8 @@ function stripBankTokens(s: string): string {
  */
 function splitAccount(s: string): { account: string; name?: string } {
   const cleaned = stripBankTokens(s);
+  // A dash-segmented mask is the account itself — never carve a token out of it.
+  if (MASKED_ACCOUNT.test(cleaned)) return { account: cleaned };
   const m = cleaned.match(/[Xx]+-?\d+/);
   if (!m) return { account: cleaned };
   const name = cleaned.replace(m[0], "").replace(/\s+/g, " ").trim();
@@ -116,6 +124,15 @@ function splitAccount(s: string): { account: string; name?: string } {
 function valueAfterIn(trimmed: string[], label: RegExp): string | undefined {
   const i = trimmed.findIndex((t) => label.test(t));
   return i >= 0 ? trimmed[i + 1] : undefined;
+}
+
+/** "7 ก.ย. 69 14:13 น." — an unlabelled Thai date+time line. */
+const BARE_DATE = /^\d{1,2}\s+\S+\s+\d{2,4}\s+\d{1,2}:\d{2}/;
+
+/** The date line some banks place directly under the direction header. */
+function dateAfterHeader(trimmed: string[], header: string): string | undefined {
+  const next = trimmed[trimmed.indexOf(header) + 1];
+  return next && BARE_DATE.test(next) ? next.replace(/\s+/g, " ") : undefined;
 }
 
 /** "ยอดที่ใช้ได้" / "ยอดเงินคงเหลือ" — the remaining-balance row, when sent. */
@@ -258,10 +275,15 @@ export function parseBankTx(
   if (!header) return null;
   const direction = header.endsWith("เข้า") ? "in" : "out";
 
-  const amount = parseAmount(trimmed.find((t) => /^[+-][\d,]+(\.\d+)?/.test(t)));
-  if (amount === undefined) return null;
-
   const valueAfter = (label: RegExp): string | undefined => valueAfterIn(trimmed, label);
+
+  // SCB/KTB sign the amount ("+2,000.00"); KBank LIVE prints it unsigned
+  // ("15.00 บาท") and leaves the direction to the header alone — so fall back
+  // to the "จำนวนเงิน" row, which only a real tx bubble carries.
+  const amount =
+    parseAmount(trimmed.find((t) => /^[+-][\d,]+(\.\d+)?/.test(t))) ??
+    parseAmount(valueAfter(/^จำนวนเงิน$/));
+  if (amount === undefined || amount <= 0) return null;
 
   // Which bank sent this — from the OA's own display name, so an OA we can
   // name but not parse yet (GSB Now, KBank LIVE) still reports a bank code.
@@ -314,7 +336,10 @@ export function parseBankTx(
 
   if (memo) tx.memo = memo;
 
-  const txDate = valueAfter(/^(วันที่\s*\/\s*เวลา|วันที่ทำรายการ)$/);
+  // KBank has no date label — the date sits in the header box, right after the
+  // direction line ("รายการเงินเข้า" → "7 ก.ย. 69 14:13 น.").
+  const txDate =
+    valueAfter(/^(วันที่\s*\/\s*เวลา|วันที่ทำรายการ)$/) ?? dateAfterHeader(trimmed, header);
   if (txDate) tx.txDate = txDate;
 
   return tx;
