@@ -47,6 +47,19 @@ function optionalInt(name: string, defaultValue: number): number {
  * Load and validate worker configuration from environment variables.
  * Throws on missing required values.
  */
+/**
+ * `LINE_LEGY_ENCRYPTED` → linejs `legy.encrypted`. Defaults to `false`: LINE's encrypted gateway
+ * (`/enc`) has answered every request with an empty 404 since 2026-11-18 (evex-dev/linejs#280),
+ * while plain `/S4` on legy.line-apps.com keeps working. `auto` = linejs's own choice.
+ */
+export function parseLegyEncrypted(raw: string): boolean | "auto" {
+  const value = raw.toLowerCase();
+  if (value === "auto") return "auto";
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new Error(`[Config] Invalid LINE_LEGY_ENCRYPTED: "${raw}". Must be one of: auto, true, false`);
+}
+
 export function loadConfig(): WorkerConfig {
   const logLevel = optionalEnv("LOG_LEVEL", "info") as LogLevel;
   if (!LOG_LEVELS.includes(logLevel)) {
@@ -145,6 +158,7 @@ export function loadConfig(): WorkerConfig {
     instanceId,
     botName: optionalEnv("BOT_NAME", "rlbotline"),
     device: optionalEnv("LINE_DEVICE", "IOSIPAD"),
+    legyEncrypted: parseLegyEncrypted(optionalEnv("LINE_LEGY_ENCRYPTED", "false")),
     rateLimitCalls: optionalInt("RATE_LIMIT_CALLS", 5),
     rateLimitWindowMs: optionalInt("RATE_LIMIT_WINDOW_MS", 10000),
     messageRetentionHours: optionalInt("MESSAGE_RETENTION_HOURS", 24),

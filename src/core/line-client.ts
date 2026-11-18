@@ -43,7 +43,10 @@ let botMid = "";
 /** Device + storage passed to linejs login — cached so an on-demand re-login
  *  (triggered by the `login_qr`/`login_password` RPCs) reuses the same session
  *  storage instead of dropping the persisted blob. */
-let loginDeviceOptions: { device: Device; storage: BaseStorage } | null = null;
+/** What every login path hands linejs — `legy` carries `LINE_LEGY_ENCRYPTED`. */
+type LoginDeviceOptions = { device: Device; storage: BaseStorage; legy: { encrypted: boolean | "auto" } };
+
+let loginDeviceOptions: LoginDeviceOptions | null = null;
 /** True while a login attempt is running, so a bootstrap login and an RPC-
  *  triggered login can't run concurrently and fight over the client. */
 let loginInFlight = false;
@@ -561,7 +564,7 @@ async function attemptLoginWithRetry(
  * login. Shared by the bootstrap flow and the on-demand `startQrLogin`.
  */
 function buildQrAttempt(
-  deviceOptions: { device: Device; storage: BaseStorage },
+  deviceOptions: LoginDeviceOptions,
   pinWaitTimeoutMs: number,
 ): () => Promise<LoginAttemptOutcome> {
   return async () => {
@@ -613,7 +616,7 @@ function buildQrAttempt(
  * bootstrap flow and the on-demand `startPasswordLogin`.
  */
 function buildPasswordAttempt(
-  deviceOptions: { device: Device; storage: BaseStorage },
+  deviceOptions: LoginDeviceOptions,
   email: string,
   password: string,
   pinWaitTimeoutMs: number,
@@ -675,11 +678,15 @@ function buildSessionStorage(initial?: Record<string, Storage["Value"]>): BaseSt
  */
 function ensureLoginDeviceOptions(
   config: WorkerConfig,
-): { device: Device; storage: BaseStorage } {
+): LoginDeviceOptions {
   if (loginDeviceOptions) return loginDeviceOptions;
   initSharedLimiter(config.rateLimitCalls, config.rateLimitWindowMs);
   const storage = buildSessionStorage();
-  loginDeviceOptions = { device: parseDevice(config.device), storage };
+  loginDeviceOptions = {
+    device: parseDevice(config.device),
+    storage,
+    legy: { encrypted: config.legyEncrypted },
+  };
   return loginDeviceOptions;
 }
 
@@ -760,7 +767,8 @@ export async function initLineClient(config: WorkerConfig): Promise<LineClientIn
 
   const storage = buildSessionStorage(initialStorage);
   const device = parseDevice(config.device);
-  loginDeviceOptions = { device, storage };
+  loginDeviceOptions = { device, storage, legy: { encrypted: config.legyEncrypted } };
+  logger.info("LEGY transport", { encrypted: config.legyEncrypted });
   const deviceOptions = loginDeviceOptions;
 
   const authToken = session.authToken ?? config.lineAuthToken;
