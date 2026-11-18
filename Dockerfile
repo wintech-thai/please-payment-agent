@@ -7,6 +7,7 @@ WORKDIR /app
 
 COPY package.json ./
 COPY bun.lock* ./
+COPY .npmrc ./
 
 RUN bun install --production --frozen-lockfile 2>/dev/null || bun install --production
 
