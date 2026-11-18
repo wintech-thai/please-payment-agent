@@ -344,6 +344,12 @@ export interface WorkerConfig {
   instanceId: string;
   botName: string;
   device: string;
+  /**
+   * linejs `legy.encrypted`. `false` (default) sends Talk calls as plain `/S4`/`/SYNC4` on
+   * legy.line-apps.com; `"auto"` routes token calls through `gf.line.naver.jp/enc`, which has
+   * answered every request with an empty 404 since 2026-11-18 (evex-dev/linejs#280).
+   */
+  legyEncrypted: boolean | "auto";
   rateLimitCalls: number;
   rateLimitWindowMs: number;
   messageRetentionHours: number;

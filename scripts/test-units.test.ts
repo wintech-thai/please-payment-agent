@@ -95,7 +95,7 @@ describe("⏱️ sleep()", () => {
 // ─── Database Tests ─────────────────────────────────────────────
 
 // ─── Config Tests ───────────────────────────────────────────────
-import { loadConfig } from "../src/core/config.js";
+import { loadConfig, parseLegyEncrypted } from "../src/core/config.js";
 import { waitForPinTimeout, resolveDisplayName, initLineClient } from "../src/core/line-client.js";
 import { normalizeRawContentType, resolveMessageChatId } from "../src/core/event-router.js";
 
@@ -111,6 +111,16 @@ describe("⚙️ Config", () => {
     expect(config.commandPrefix).toBe("!");
     expect(config.device).toBe("IOSIPAD");
     expect(config.rateLimitCalls).toBe(5);
+  });
+
+  test("LINE_LEGY_ENCRYPTED defaults to plain LEGY and parses auto/true/false", () => {
+    delete process.env["LINE_LEGY_ENCRYPTED"];
+    expect(loadConfig().legyEncrypted).toBe(false);
+    process.env["LINE_LEGY_ENCRYPTED"] = "auto";
+    expect(loadConfig().legyEncrypted).toBe("auto");
+    delete process.env["LINE_LEGY_ENCRYPTED"];
+    expect(parseLegyEncrypted("TRUE")).toBe(true);
+    expect(() => parseLegyEncrypted("yes")).toThrow(/LINE_LEGY_ENCRYPTED/);
   });
 
   test("loadConfig uses custom values", () => {

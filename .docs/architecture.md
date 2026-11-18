@@ -192,6 +192,7 @@ relay กลับ user app
 | `PIN_WAIT_TIMEOUT_MS` | — | `300000` | รอ PIN นานสุดก่อน park worker |
 | `COMMAND_PREFIX` | — | `!` | prefix คำสั่งบอท |
 | `LINE_DEVICE` | — | `IOSIPAD` | device type ของ linejs |
+| `LINE_LEGY_ENCRYPTED` | — | `false` | linejs `legy.encrypted` (`false`/`true`/`auto`) — `false` = ส่ง `/S4`/`/SYNC4` แบบไม่เข้ารหัสไปที่ legy.line-apps.com เพราะ `gf.line.naver.jp/enc` ตอบ 404 ว่างทุก request ตั้งแต่ 2026-11-18 (evex-dev/linejs#280); เปลี่ยนเป็น `auto` เมื่อ `/enc` กลับมาปกติ |
 | `RATE_LIMIT_CALLS` / `RATE_LIMIT_WINDOW_MS` | — | `5` / `10000` | rate limiter (anti-ban) |
 | `MESSAGE_RETENTION_HOURS` | — | `24` | เก็บ cache ข้อความกี่ชั่วโมง |
 | `LOG_LEVEL` | — | `info` | ระดับ log |
